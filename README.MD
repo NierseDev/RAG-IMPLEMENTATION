@@ -17,54 +17,19 @@ A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with mul
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Client Layer                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │   Web UI     │  │  REST API    │  │   CLI Tool   │       │
-│  └──────────────┘  └──────────────┘  └──────────────┘       │
-└─────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────┐
-│                      FastAPI Layer                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │Ingest Router │  │ Query Router │  │Admin Router  │       │
-│  └──────────────┘  └──────────────┘  └──────────────┘       │
-└─────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────┐
-│                    Service Layer                            │
-│                                                             │
-│  ┌───────────────────────────────────────────────────┐      │
-│  │         Agentic RAG Coordinator                   │      │
-│  │  ┌─────┐ ┌────────┐ ┌────────┐ ┌────────┐         │      │
-│  │  │Plan │→│Retrieve│→│ Reason │→│ Verify │         │      │
-│  │  └─────┘ └────────┘ └────────┘ └────────┘         │      │
-│  │            ↓                         │            │      │
-│  │  ┌────────┐                    ┌────────┐         │      │
-│  │  │Decide  │←───────────────────│Continue│         │      │
-│  │  └────────┘                    └────────┘         │      │
-│  └───────────────────────────────────────────────────┘      │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │   Document   │  │  Embedding   │  │     LLM      │       │
-│  │  Processor   │  │   Service    │  │   Service    │       │
-│  └──────────────┘  └──────────────┘  └──────────────┘       │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐                         │
-│  │  Retrieval   │  │Verification  │                         │
-│  │   Service    │  │   Service    │                         │
-│  └──────────────┘  └──────────────┘                         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────┐
-│                    Data Layer                               │
-│  ┌──────────────┐  ┌──────────────┐                         │
-│  │  Supabase    │  │    Ollama    │                         │
-│  │  (pgvector)  │  │ (LLM+Embed)  │                         │
-│  └──────────────┘  └──────────────┘                         │
-└─────────────────────────────────────────────────────────────┘
-```
+**Tech Stack:**
+- **Frontend**: Web UI with chat interface
+- **Backend**: FastAPI with REST endpoints
+- **Vector Database**: Supabase (PostgreSQL + pgvector)
+- **AI**: Ollama (local LLM + embeddings)
+- **Document Processing**: Docling (multi-format support)
+
+**Core Components:**
+- **Agentic RAG Coordinator**: 6-phase reasoning loop (Plan → Retrieve → Reason → Verify → Decide → Answer)
+- **Document Processor**: Converts documents to searchable chunks
+- **Embedding Service**: Generates vector representations
+- **Retrieval Service**: Semantic search with pgvector
+- **Verification Service**: Hallucination detection and confidence scoring
 
 ## 🚀 Quick Start
 
@@ -113,7 +78,7 @@ python main.py
 - **Web UI**: http://localhost:8000
 - **Debug Chat**: http://localhost:8000/debug
 - **API Docs**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+- **ReDoc**: http://localhost:8000/redocdoc
 
 ### Quick Test
 
@@ -197,29 +162,9 @@ An interactive chat-style debugging interface at `/debug` that provides real-tim
 
 ### Example Scenarios
 
-**Scenario 1: Daily Report Update**
-```
-File: daily_report.pdf (already exists)
-Action: Replace
-Result: Old report removed, new report added
-```
-
-**Scenario 2: Documentation Expansion**
-```
-File: documentation.pdf (already exists)
-Action: Append
-Result: Old chapters preserved, new chapters added
-```
-
-**Scenario 3: Mixed Batch**
-```
-Files: new_report.pdf (new), existing_doc.pdf (exists), another_new.txt (new)
-Action: Skip
-Result:
-  - new_report.pdf → Uploaded (NEW)
-  - existing_doc.pdf → Skipped
-  - another_new.txt → Uploaded (NEW)
-```
+- **Daily Report Update**: Use "Replace" to update with latest version
+- **Documentation Expansion**: Use "Append" to add new content while keeping existing
+- **Mixed Batch Upload**: Use "Skip" to only upload new files, skipping existing ones
 
 ## 📚 API Endpoints
 
@@ -696,69 +641,6 @@ MIT License - see LICENSE file for details
 ## 🤝 Contributing
 
 Contributions welcome! Please open an issue or submit a pull request.
-
-## 🔄 Workflow Diagrams
-
-### Duplicate File Handling Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     USER SELECTS FILES                          │
-│                  (Hold Ctrl/Cmd for multiple)                   │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              AUTOMATIC DUPLICATE CHECK                          │
-│    API Call: POST /ingest/check-duplicates                      │
-│    • Checks each filename against database                      │
-│    • Returns: exists status + chunk count                       │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-                    ┌────┴────┐
-                    │  Any    │
-                    │Duplicates│
-                    │ Found?  │
-                    └────┬────┘
-                         │
-           ┌─────────────┴─────────────┐
-           │                           │
-          NO                          YES
-           │                           │
-           ▼                           ▼
-┌──────────────────┐    ┌────────────────────────────────────┐
-│  No Warning      │    │  ⚠️  DUPLICATE WARNING SHOWN       │
-│  Shown           │    │  • Lists duplicate files           │
-│                  │    │  • Shows existing chunk counts     │
-│                  │    │  • Dropdown for action selection   │
-└────────┬─────────┘    └─────────────┬──────────────────────┘
-         │                            │
-         │                            ▼
-         │              ┌──────────────────────────────┐
-         │              │   USER SELECTS ACTION:        │
-         │              │   ○ Skip (default)            │
-         │              │   ○ Replace                   │
-         │              │   ○ Append                    │
-         │              └──────────────┬────────────────┘
-         │                            │
-         └────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   USER CLICKS "UPLOAD"                          │
-│              API Call: POST /ingest/batch                       │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              SHOW DETAILED RESULTS                              │
-│  ✓ file1.pdf - NEW (12 chunks)                                 │
-│  ✓ file2.pdf - REPLACED (was 10, now 15 chunks)                │
-│  ✓ file3.pdf - APPENDED (20 existing + 5 new = 25 total)       │
-│  ⊘ file4.pdf - SKIPPED (already exists with 8 chunks)          │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ## 🧪 Testing Scripts
 
