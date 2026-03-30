@@ -45,17 +45,30 @@ class VerificationService:
                 max_tokens=300
             )
             
+            # DEBUG: Log raw LLM response
+            logger.info("=" * 80)
+            logger.info("DEBUG: Raw LLM Verification Response:")
+            logger.info("-" * 80)
+            logger.info(verification_result)
+            logger.info("=" * 80)
+            
             # Parse verification result
             parsed = self._parse_verification(verification_result)
+            
+            # DEBUG: Log parsed result
+            logger.info(f"DEBUG: Parsed verification - verified={parsed['verified']}, confidence={parsed['confidence']}, issues={parsed['issues']}")
             
             # Additional checks
             grounding_score = self._check_grounding(answer, retrieved_docs)
             parsed['grounding_score'] = grounding_score
+            logger.info(f"DEBUG: Grounding score calculated: {grounding_score:.2f}")
             
             # Adjust confidence based on grounding
+            original_confidence = parsed['confidence']
             if grounding_score < 0.5:
                 parsed['confidence'] = min(parsed['confidence'], 0.5)
                 parsed['issues'].append(f"Low grounding score: {grounding_score:.2f}")
+                logger.warning(f"DEBUG: Confidence capped from {original_confidence:.2f} to {parsed['confidence']:.2f} due to low grounding")
             
             logger.info(f"Verification: {parsed['verified']}, confidence: {parsed['confidence']:.2f}")
             return parsed
@@ -105,17 +118,41 @@ class VerificationService:
             'issues': []
         }
         
-        # Parse verified status
-        if re.search(r'verified:\s*(yes|true)', verification_text.lower()):
-            result['verified'] = True
+        logger.info("DEBUG: Starting verification parsing...")
         
-        # Parse confidence
+        # Parse verified status
+        verified_match = re.search(r'verified:\s*(yes|true)', verification_text.lower())
+        if verified_match:
+            result['verified'] = True
+            logger.info(f"DEBUG: Found verified status: True (matched: '{verified_match.group(0)}')")
+        else:
+            logger.info("DEBUG: Verified status not found or False")
+        
+        # Parse confidence - try multiple patterns
         confidence_match = re.search(r'confidence:\s*([0-9.]+)', verification_text.lower())
         if confidence_match:
             try:
                 result['confidence'] = float(confidence_match.group(1))
-            except ValueError:
-                pass
+                logger.info(f"DEBUG: Confidence extracted: {result['confidence']} (matched: '{confidence_match.group(0)}')")
+            except ValueError as e:
+                logger.error(f"DEBUG: Failed to parse confidence value '{confidence_match.group(1)}': {e}")
+        else:
+            logger.warning(f"DEBUG: No confidence pattern matched! Using default: {result['confidence']}")
+            # Try alternative patterns
+            alt_patterns = [
+                r'confidence[:\s]+([0-9.]+)',
+                r'confidence level[:\s]+([0-9.]+)',
+                r'([0-9.]+)\s*confidence',
+            ]
+            for pattern in alt_patterns:
+                alt_match = re.search(pattern, verification_text.lower())
+                if alt_match:
+                    try:
+                        result['confidence'] = float(alt_match.group(1))
+                        logger.info(f"DEBUG: Confidence extracted via alternative pattern: {result['confidence']} (pattern: {pattern})")
+                        break
+                    except ValueError:
+                        continue
         
         # Parse issues
         issues_match = re.search(r'issues?:(.*?)(?:\n\n|\Z)', verification_text, re.DOTALL | re.IGNORECASE)

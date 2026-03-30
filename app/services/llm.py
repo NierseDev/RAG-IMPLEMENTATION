@@ -72,6 +72,21 @@ class LLMService:
             # Validate and truncate if needed
             prompt, system = self._validate_and_truncate_prompt(prompt, system, max_tokens)
             
+            # Add instruction to disable thinking mode if no system message
+            if not system:
+                system = "You are a helpful AI assistant. Provide your answer directly without showing your thinking process."
+            
+            # DEBUG: Log prompt details
+            logger.info("=" * 80)
+            logger.info("DEBUG LLM: Generating response")
+            logger.info(f"  Model: {self.model}")
+            logger.info(f"  Temperature: {temperature}")
+            logger.info(f"  Max tokens: {max_tokens if max_tokens else self.max_output_tokens}")
+            logger.info(f"  System prompt length: {len(system) if system else 0}")
+            logger.info(f"  User prompt length: {len(prompt)}")
+            logger.info(f"  User prompt preview: {prompt[:200]}...")
+            logger.info("=" * 80)
+            
             messages = []
             if system:
                 messages.append({"role": "system", "content": system})
@@ -82,10 +97,45 @@ class LLMService:
                 messages=messages,
                 options={
                     "temperature": temperature,
-                    "num_predict": max_tokens if max_tokens else self.max_output_tokens
+                    "num_predict": max_tokens if max_tokens else self.max_output_tokens,
+                    "enable_thinking": False  # Disable thinking mode - use all tokens for content
                 }
             )
-            return response['message']['content']
+            
+            # DEBUG: Log raw response (ChatResponse object supports dict-like access)
+            logger.info("=" * 80)
+            logger.info(f"DEBUG LLM: Response type: {type(response)}")
+            try:
+                content = response['message']['content']
+                thinking = response['message'].get('thinking', None)
+                
+                logger.info(f"DEBUG LLM: Content length: {len(content) if content else 0}")
+                logger.info(f"DEBUG LLM: Thinking length: {len(thinking) if thinking else 0}")
+                
+                # If content is empty but thinking exists, use thinking as content
+                if (not content or len(content.strip()) == 0) and thinking:
+                    logger.warning("DEBUG LLM: Content is empty but 'thinking' field has data!")
+                    logger.warning("DEBUG LLM: Using 'thinking' content as fallback")
+                    content = thinking
+                    logger.info(f"DEBUG LLM: Using thinking content ({len(content)} chars)")
+                
+                logger.info(f"DEBUG LLM: Final content preview: {repr(content[:200]) if content else 'EMPTY'}")
+                
+                if not content or len(content.strip()) == 0:
+                    logger.error("DEBUG LLM: ⚠️ COMPLETELY EMPTY RESPONSE!")
+                    logger.error(f"DEBUG LLM: Full response: {response}")
+                    logger.error(f"DEBUG LLM: Done reason: {response.get('done_reason', 'unknown')}")
+                else:
+                    logger.info(f"DEBUG LLM: ✅ Response received ({len(content)} chars)")
+            except Exception as e:
+                logger.error(f"DEBUG LLM: Error in debug logging: {e}")
+                # Don't let debug logging break the actual response
+                content = response['message']['content']
+                if not content:
+                    content = ""
+            logger.info("=" * 80)
+            
+            return content
         except Exception as e:
             error_msg = str(e).lower()
             if any(keyword in error_msg for keyword in ["context", "length", "token", "too long"]):
@@ -112,10 +162,15 @@ class LLMService:
                         messages=messages,
                         options={
                             "temperature": temperature,
-                            "num_predict": max_tokens if max_tokens else self.max_output_tokens // 2
+                            "num_predict": max_tokens if max_tokens else self.max_output_tokens // 2,
+                            "enable_thinking": False  # Disable thinking mode
                         }
                     )
-                    return response['message']['content']
+                    # Handle thinking mode in retry too
+                    content = response['message']['content']
+                    if not content and response['message'].get('thinking'):
+                        content = response['message']['thinking']
+                    return content
                 except Exception as retry_error:
                     logger.error(f"Retry failed: {retry_error}")
                     return "I apologize, but the context is too large for me to process. Please try with a smaller query or fewer documents."
@@ -163,7 +218,7 @@ class LLMService:
     
     def create_plan_prompt(self, query: str) -> str:
         """Create prompt for the planning phase."""
-        return f"""You are a planning agent. Analyze the following user query and create a retrieval strategy.
+        return f"""Analyze the following user query and create a retrieval strategy.
 
 User Query: {query}
 
@@ -172,11 +227,11 @@ Create a plan that describes:
 2. What search terms or concepts to look for
 3. What type of documents would be most relevant
 
-Be specific and concise. Output only the plan."""
+Provide ONLY the plan, no preamble or explanation."""
     
     def create_reason_prompt(self, query: str, retrieved_docs: str) -> str:
         """Create prompt for the reasoning phase."""
-        return f"""You are a reasoning agent. Evaluate the retrieved information and determine if it's sufficient to answer the query.
+        return f"""Evaluate the retrieved information and determine if it's sufficient to answer the query.
 
 User Query: {query}
 
@@ -188,11 +243,11 @@ Analyze:
 2. Is there enough information to provide a complete answer?
 3. Are there any gaps or missing information?
 
-Output your reasoning in a structured format."""
+Provide ONLY your analysis, no preamble."""
     
     def create_verify_prompt(self, query: str, answer: str, context: str) -> str:
         """Create prompt for verification phase."""
-        return f"""You are a verification agent. Check if the answer is grounded in the provided context and detect any hallucinations.
+        return f"""Check if the answer is grounded in the provided context and detect any hallucinations.
 
 User Query: {query}
 
@@ -206,22 +261,40 @@ Verify:
 2. Are there any fabricated or unsupported statements?
 3. What is your confidence level (0.0-1.0)?
 
-Output format:
+Provide ONLY the verification result in this exact format:
 Verified: [yes/no]
 Confidence: [0.0-1.0]
-Issues: [list any problems]"""
+Issues: [list any problems or write "none"]"""
     
     def create_answer_prompt(self, query: str, context: str) -> str:
         """Create prompt for final answer generation."""
         system = """You are a helpful AI assistant. Answer the user's question based ONLY on the provided context. 
-If the context doesn't contain enough information, say so. Always cite your sources by mentioning the relevant parts of the context."""
+If the context doesn't contain enough information, say so. Always cite your sources using APA format in-text citations."""
         
         prompt = f"""Context:
 {context}
 
 Question: {query}
 
-Provide a clear, accurate answer based solely on the context above. Include citations where appropriate."""
+Provide a clear, accurate answer based solely on the context above. 
+
+IMPORTANT: 
+- If the context does NOT contain relevant information, respond ONLY with: "I don't have information about [topic] in the provided context."
+- Do NOT list what other topics are mentioned if information is unavailable.
+- When answering, use APA format for citations:
+  * For in-text citations: (Author, Year) or (Author, Year, p. X)
+  * For PDF sources without clear author/year: (Source Title, n.d.)
+  * Include full references at the end under "References"
+
+Example answer with citations:
+"Deep Q-Learning uses neural networks to approximate Q-functions (Smith, 2020). According to recent research (Johnson & Lee, 2021), this approach has shown significant improvements..."
+
+References:
+Smith, J. (2020). Deep reinforcement learning. Journal of AI, 15(2), 45-67.
+Johnson, M., & Lee, K. (2021). Adaptive game AI techniques. In Proceedings of AI Conference (pp. 123-145).
+
+Example when information is unavailable:
+"I don't have information about BTRFS in the provided context.\""""
         
         return prompt
     

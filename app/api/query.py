@@ -36,10 +36,26 @@ async def agentic_query(request: QueryRequest):
         
         processing_time = time.time() - start_time
         
+        # DEBUG: Log final state
+        logger.info("=" * 80)
+        logger.info("DEBUG: Final Response State")
+        logger.info(f"  final_answer exists: {state.final_answer is not None}")
+        logger.info(f"  final_answer length: {len(state.final_answer) if state.final_answer else 0}")
+        logger.info(f"  confidence: {state.confidence}")
+        logger.info(f"  iterations: {state.iteration}")
+        logger.info(f"  verification_results count: {len(state.verification_results)}")
+        if state.verification_results:
+            logger.info(f"  last verification: {state.verification_results[-1]}")
+        logger.info("=" * 80)
+        
         # Build response
+        answer_text = state.final_answer if state.final_answer else "Unable to generate answer"
+        if not state.final_answer:
+            logger.error("DEBUG: final_answer is None! This is why 'Unable to generate answer' appears")
+        
         return AgentResponse(
             query=state.original_query,
-            answer=state.final_answer or "Unable to generate answer",
+            answer=answer_text,
             confidence=state.confidence,
             sources=state.sources,
             reasoning_trace=state.reasoning,

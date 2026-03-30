@@ -89,7 +89,9 @@ class AgenticRAG:
             if self.enable_verification:
                 verification = await self._verify_phase(state, answer)
                 state.verification_results.append(verification)
-                state.confidence = verification.get('confidence', 0.5)
+                confidence_from_verification = verification.get('confidence', 0.5)
+                state.confidence = confidence_from_verification
+                logger.info(f"DEBUG: Agent received confidence from verification: {confidence_from_verification:.2f}, assigned to state.confidence: {state.confidence:.2f}")
                 state.add_reasoning(
                     "VERIFY",
                     f"Verified: {verification['verified']}, Confidence: {state.confidence:.2f}"
@@ -104,22 +106,27 @@ class AgenticRAG:
             # Phase 6: Decide
             decision = await self._decide_phase(state, answer)
             state.decision = decision
+            logger.info(f"DEBUG: Decision made: {decision}")
             
             if decision == "answer":
                 state.final_answer = answer
+                logger.info(f"DEBUG: Setting final_answer (length: {len(answer)} chars)")
                 state.sources = retrieval_service.extract_sources(state.retrieved_docs)
                 state.add_reasoning("DECIDE", f"Providing final answer with confidence {state.confidence:.2f}")
                 break
             else:
                 # Continue iteration - refine query
+                logger.info(f"DEBUG: Continuing to next iteration (current: {state.iteration})")
                 state.add_reasoning("DECIDE", "Need more information, refining query")
                 state.current_query = await self._refine_query(state)
                 state.add_reasoning("REFINE", f"New query: {state.current_query}")
         
         # If max iterations reached without answer
         if not state.final_answer:
+            logger.warning("DEBUG: Max iterations reached without final_answer! Generating one now...")
             answer = await self._answer_phase(state)
             state.final_answer = answer
+            logger.info(f"DEBUG: Generated fallback final_answer (length: {len(answer) if answer else 0} chars)")
             state.sources = retrieval_service.extract_sources(state.retrieved_docs)
             state.add_reasoning("COMPLETE", f"Max iterations reached, providing best answer")
         
@@ -205,12 +212,25 @@ class AgenticRAG:
     
     async def _decide_phase(self, state: AgentState, answer: str) -> str:
         """Phase 6: Decide whether to answer or continue."""
+        logger.info("=" * 80)
+        logger.info("DEBUG: Decision Phase")
+        logger.info(f"  Current confidence: {state.confidence}")
+        logger.info(f"  Min confidence threshold: {self.min_confidence}")
+        logger.info(f"  Iteration: {state.iteration}/{self.max_iterations}")
+        logger.info(f"  Retrieved docs: {len(state.retrieved_docs)}")
+        
         # Decision logic
         if state.confidence and state.confidence >= self.min_confidence:
+            logger.info(f"  DECISION: answer (confidence {state.confidence:.2f} >= {self.min_confidence:.2f})")
+            logger.info("=" * 80)
             return "answer"
+        else:
+            logger.info(f"  Confidence check failed: {state.confidence} < {self.min_confidence}")
         
         # Check if we have enough information
         if len(state.retrieved_docs) >= 10:  # Enough documents retrieved
+            logger.info(f"  DECISION: answer (enough documents: {len(state.retrieved_docs)} >= 10)")
+            logger.info("=" * 80)
             return "answer"
         
         # Check for information gaps
@@ -218,10 +238,17 @@ class AgenticRAG:
             state.current_query,
             state.retrieved_docs[-6:]
         )
+        logger.info(f"  Information gaps detected: {has_gaps}")
+        if gaps:
+            logger.info(f"  Gaps: {gaps}")
         
         if has_gaps and state.iteration < self.max_iterations:
+            logger.info(f"  DECISION: continue (has gaps and iteration {state.iteration} < {self.max_iterations})")
+            logger.info("=" * 80)
             return "continue"
         
+        logger.info(f"  DECISION: answer (no continuation criteria met)")
+        logger.info("=" * 80)
         return "answer"
     
     async def _refine_query(self, state: AgentState) -> str:

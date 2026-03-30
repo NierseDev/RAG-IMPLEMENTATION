@@ -58,7 +58,7 @@ class RetrievalService:
         max_tokens: Optional[int] = None
     ) -> str:
         """
-        Format retrieval results into context string.
+        Format retrieval results into context string with APA-style source information.
         Ensures the context fits within token limits.
         """
         if not results:
@@ -67,9 +67,14 @@ class RetrievalService:
         # Use configured max or default
         max_tokens = max_tokens or settings.max_context_tokens
         
-        # Format each result
+        # Format each result with APA-friendly citations
         context_parts = []
         for idx, result in enumerate(results, 1):
+            # Extract potential author/year from source filename
+            source_name = result.source.replace('.pdf', '').replace('_', ' ')
+            
+            # Format: [Source #: Filename] Content
+            # The LLM will use this to create proper APA citations
             part = f"[Source {idx}: {result.source} (similarity: {result.similarity:.3f})]\n{result.text}\n"
             context_parts.append(part)
         

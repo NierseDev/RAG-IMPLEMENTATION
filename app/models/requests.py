@@ -11,14 +11,14 @@ class QueryRequest(BaseModel):
     filter_source: Optional[str] = Field(None, description="Filter by document source")
     filter_provider: Optional[str] = Field(None, description="Filter by AI provider")
     filter_model: Optional[str] = Field(None, description="Filter by embedding model")
-    top_k: Optional[int] = Field(None, ge=1, le=20, description="Number of results to retrieve")
+    top_k: Optional[int] = Field(None, ge=1, le=50, description="Number of results to retrieve")
     enable_agent: bool = Field(True, description="Enable agentic reasoning loop")
 
 
 class SimpleQueryRequest(BaseModel):
     """Request for simple RAG query without agent."""
     query: str = Field(..., min_length=1, description="User question")
-    top_k: Optional[int] = Field(None, ge=1, le=20, description="Number of results")
+    top_k: Optional[int] = Field(None, ge=1, le=50, description="Number of results")
 
 
 class IngestDocumentRequest(BaseModel):

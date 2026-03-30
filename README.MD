@@ -2,20 +2,20 @@
 
 A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with multi-step reasoning, self-reflection, and hallucination detection. Built with FastAPI, Supabase (pgvector), and Ollama.
 
-## ≡ƒîƒ Features
+## ✨ Features
 
-- **≡ƒñû Agentic Reasoning Loop**: 6-phase reasoning cycle (Plan ΓåÆ Retrieve ΓåÆ Reason ΓåÆ Verify ΓåÆ Decide ΓåÆ Answer/Iterate)
-- **Γ£à Hallucination Prevention**: Ground checking, citation requirements, and confidence scoring
-- **≡ƒöä Iterative Query Refinement**: Agent refines queries based on retrieved information
-- **≡ƒôä Multi-Format Documents**: Process PDF, DOCX, PPTX, HTML, Markdown using Docling
-- **≡ƒöì Vector Semantic Search**: Fast similarity search with Supabase pgvector
-- **≡ƒÄ» Verification System**: Validates answers against retrieved context
-- **≡ƒîÉ REST API**: Clean FastAPI endpoints with auto-generated docs
-- **≡ƒÆ╗ Debug Web UI**: Real-time visualization of agent reasoning
-- **≡ƒôª Batch Upload**: Multiple file upload with duplicate detection
-- **≡ƒöä Smart Duplicate Handling**: Skip, Replace, or Append modes for existing files
+- **🔄 Agentic Reasoning Loop**: 6-phase reasoning cycle (Plan → Retrieve → Reason → Verify → Decide → Answer/Iterate)
+- **✓ Hallucination Prevention**: Ground checking, citation requirements, and confidence scoring
+- **🔄 Iterative Query Refinement**: Agent refines queries based on retrieved information
+- **📄 Multi-Format Documents**: Process PDF, DOCX, PPTX, HTML, Markdown using Docling
+- **🔍 Vector Semantic Search**: Fast similarity search with Supabase pgvector
+- **✅ Verification System**: Validates answers against retrieved context
+- **🌐 REST API**: Clean FastAPI endpoints with auto-generated docs
+- **🖥️ Debug Web UI**: Real-time visualization of agent reasoning
+- **📤 Batch Upload**: Multiple file upload with duplicate detection
+- **🔄 Smart Duplicate Handling**: Skip, Replace, or Append modes for existing files
 
-## ≡ƒÅù∩╕Å Architecture
+## 🏗️ Architecture
 
 **Tech Stack:**
 - **Frontend**: Web UI with chat interface
@@ -25,13 +25,13 @@ A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with mul
 - **Document Processing**: Docling (multi-format support)
 
 **Core Components:**
-- **Agentic RAG Coordinator**: 6-phase reasoning loop (Plan ΓåÆ Retrieve ΓåÆ Reason ΓåÆ Verify ΓåÆ Decide ΓåÆ Answer)
+- **Agentic RAG Coordinator**: 6-phase reasoning loop (Plan → Retrieve → Reason → Verify → Decide → Answer)
 - **Document Processor**: Converts documents to searchable chunks
 - **Embedding Service**: Generates vector representations
 - **Retrieval Service**: Semantic search with pgvector
 - **Verification Service**: Hallucination detection and confidence scoring
 
-## ≡ƒÜÇ Quick Start
+## ⚡ Quick Start
 
 ### Prerequisites
 
@@ -109,15 +109,15 @@ curl -X POST http://localhost:8000/query \
   -d '{"query": "What is your return policy?"}'
 ```
 
-## ≡ƒÆ¼ Debug Chat Interface
+## 💬 Debug Chat Interface
 
 An interactive chat-style debugging interface at `/debug` that provides real-time insights into the agent's reasoning process.
 
 ### Features
-- **≡ƒÆ¼ Conversational UI**: Chat-style interface with message history
-- **≡ƒÉ¢ Debug Information**: Collapsible panels showing statistics, reasoning trace, and sources
-- **ΓÜÖ∩╕Å Configuration**: Toggle between Agentic/Simple modes, adjust Top K, and toggle debug info
-- **≡ƒôè Real-time Metrics**: Processing time, iterations, confidence scores, and verification status
+- **💬 Conversational UI**: Chat-style interface with message history
+- **🔧 Debug Information**: Collapsible panels showing statistics, reasoning trace, and sources
+- **⚙️ Configuration**: Toggle between Agentic/Simple modes, adjust Top K, and toggle debug info
+- **📊 Real-time Metrics**: Processing time, iterations, confidence scores, and verification status
 
 ### Usage
 1. Navigate to `http://localhost:8000/debug`
@@ -131,7 +131,7 @@ An interactive chat-style debugging interface at `/debug` that provides real-tim
 - **Check Reasoning Trace** to understand how the agent reached its answer
 - **Review Sources** to verify answer is grounded in retrieved documents
 
-## ≡ƒôª Multiple File Upload with Duplicate Detection
+## 📤 Multiple File Upload with Duplicate Detection
 
 ### How to Upload Multiple Files
 
@@ -145,17 +145,17 @@ An interactive chat-style debugging interface at `/debug` that provides real-tim
 
 ### Duplicate Handling Modes
 
-#### Γ£à Skip (Recommended)
+#### ✓ Skip (Recommended)
 - **What it does**: Doesn't upload files that already exist
 - **When to use**: Default safe option, prevents accidental overwrites
 - **Use case**: Bulk uploads with some duplicates
 
-#### ≡ƒöä Replace
+#### 🔄 Replace
 - **What it does**: Deletes old chunks and uploads new version
 - **When to use**: File content has changed significantly
 - **Use case**: Daily/regular updates (e.g., daily reports)
 
-#### Γ₧ò Append
+#### ➕ Append
 - **What it does**: Keeps old chunks and adds new chunks
 - **When to use**: Adding new information to existing document
 - **Use case**: Incremental content addition (e.g., documentation expansion)
@@ -166,7 +166,7 @@ An interactive chat-style debugging interface at `/debug` that provides real-tim
 - **Documentation Expansion**: Use "Append" to add new content while keeping existing
 - **Mixed Batch Upload**: Use "Skip" to only upload new files, skipping existing ones
 
-## ≡ƒôÜ API Endpoints
+## 📡 API Endpoints
 
 ### Health & Stats
 
@@ -391,13 +391,13 @@ Execute a **simple RAG query** (single retrieval, no agent loop).
 ### Admin
 
 #### DELETE /reset
-**ΓÜá∩╕Å DANGER**: Clear all chunks from the database. Use with caution!
+**⚠️ DANGER**: Clear all chunks from the database. Use with caution!
 
 ```bash
 curl -X DELETE http://localhost:8000/reset
 ```
 
-## ≡ƒöº Configuration
+## ⚙️ Configuration
 
 All configuration is managed through environment variables (see .env.example):
 
@@ -414,7 +414,7 @@ All configuration is managed through environment variables (see .env.example):
 | MIN_CONFIDENCE_THRESHOLD | 0.7 | Min confidence to finalize answer |
 | ENABLE_VERIFICATION | true | Enable hallucination detection |
 
-## ≡ƒºá How the Agent Works
+## 🧠 How the Agent Works
 
 ### 6-Phase Reasoning Loop
 
@@ -439,7 +439,7 @@ All configuration is managed through environment variables (see .env.example):
 - **Rewriting**: Rephrases using terminology from retrieved docs
 - **Decomposition**: Breaks complex queries into sub-questions
 
-## ≡ƒôû Example Usage
+## 💻 Example Usage
 
 ### Python Client
 
@@ -488,7 +488,7 @@ curl -X POST http://localhost:8000/query \
 curl http://localhost:8000/stats
 ```
 
-## ΓÜí Performance Optimization
+## ⚡ Performance Optimization
 
 ### Speed vs Quality Trade-offs
 
@@ -560,7 +560,7 @@ OLLAMA_MAX_LOADED_MODELS=2
 OLLAMA_NUM_GPU=999
 ```
 
-## ≡ƒÉ¢ Troubleshooting
+## 🔧 Troubleshooting
 
 ### Ollama Connection Issues
 ```bash
@@ -627,47 +627,175 @@ ollama serve
 - Check system resources (CPU, RAM)
 - Restart Ollama service
 
-## ≡ƒöÉ Security Notes
+## 🔒 Security Notes
 
 - Never commit .env file with real credentials
 - Use SUPABASE_SERVICE_ROLE_KEY only in backend
 - Implement authentication for production use
 - Review RLS policies in Supabase for multi-tenant scenarios
 
-## ≡ƒôä License
+## 📄 License
 
 MIT License - see LICENSE file for details
 
-## ≡ƒñ¥ Contributing
+## 🤝 Contributing
 
 Contributions welcome! Please open an issue or submit a pull request.
 
-## ≡ƒº¬ Testing Scripts
+## 🧪 Testing & Debugging
 
-### Test Agent Reasoning
+### 🔍 Debug Tool (Consolidated)
+All-in-one debugging tool for troubleshooting RAG system issues.
+
+```bash
+# Test a single query with detailed debug output
+python debug.py query "What is Deep Q Learning?"
+
+# Interactive mode for multiple queries
+python debug.py interactive
+
+# Test Ollama connection directly (isolate connection issues)
+python debug.py ollama
+
+# Show help
+python debug.py help
+```
+
+**When to use:**
+- Troubleshooting confidence score issues
+- Investigating empty responses
+- Checking Ollama connectivity
+- Analyzing agent reasoning steps
+
+### 📤 Upload Testing Tool
+Consolidated tool for testing document ingestion functionality.
+
+```bash
+# Test batch file upload
+python test_upload.py batch
+
+# Test duplicate handling (skip, replace, append modes)
+python test_upload.py duplicates
+
+# Run all upload tests
+python test_upload.py all
+
+# Show help
+python test_upload.py help
+```
+
+**Tests included:**
+- Multiple file batch upload
+- Duplicate detection
+- Skip/Replace/Append modes
+- API error handling
+
+### 🤖 Agent Testing
 ```bash
 python test_agent.py
 ```
-Tests the agentic reasoning loop with sample queries.
+Tests the core agentic reasoning loop with predefined queries. Best for smoke testing after code changes.
 
-### Test Batch Upload
-```bash
-python test_batch_upload.py
-```
-Tests multiple file upload with duplicate handling.
-
-### Test Duplicate Handling
-```bash
-python test_duplicate_handling.py
-```
-Tests skip, replace, and append modes for duplicate files.
-
-### Seed Sample Data
+### 🌱 Seed Sample Data
 ```bash
 python seed_sample.py
 ```
-Populates the database with sample documents for testing.
+Populates the database with sample documents for testing queries.
 
-## ≡ƒô¼ Support
+## 🎓 Citation Format
+
+The system uses **APA format** for citations:
+
+### In-Text Citations
+```
+According to Smith (2020), deep Q-learning improves game AI performance.
+Recent research shows significant improvements (Johnson & Lee, 2021).
+```
+
+### References Section
+The LLM automatically adds a References section at the end with full citations.
+
+### For PDFs Without Clear Author/Year
+```
+Game AI has evolved significantly (Adaptive Game AI RTContinuous Environment NeuralNetwork, n.d.).
+```
+
+### Improving Citation Quality
+
+To get better APA citations, consider:
+1. **Add metadata when uploading**: Extract author, year, title from PDFs
+2. **Create citation database**: Store bibliographic information separately
+3. **Post-process citations**: Convert source references to proper APA format
+
+## 🐛 Debugging
+
+### Quick Debug Commands
+
+```bash
+# Test a single query with full debug output (RECOMMENDED)
+python debug.py query "Your question here"
+
+# Interactive debugging session
+python debug.py interactive
+
+# Test Ollama connection
+python debug.py ollama
+
+# Alternative: Test model directly via CLI
+ollama run llama3.1:8b "test"
+```
+
+### Debug Output Interpretation
+
+**Confidence Score Issues:**
+Look for these markers in debug output:
+```
+DEBUG: Raw LLM Verification Response
+DEBUG: Parsed verification - confidence=X.XX
+DEBUG: Grounding score calculated: X.XX
+```
+
+**Decision Logic:**
+```
+DEBUG: Decision Phase
+  Current confidence: 0.5
+  Min confidence threshold: 0.5
+  DECISION: answer/continue
+```
+
+**Answer Generation:**
+```
+DEBUG: Setting final_answer (length: XXX chars)
+```
+
+### Common Issues and Solutions
+
+**Empty Responses:**
+- Check Ollama model is responding: `ollama run llama3.1:8b "test"`
+- Verify model in .env: `OLLAMA_LLM_MODEL=llama3.1:8b`
+- Check debug logs for "Content length: 0"
+
+**Confidence Always 0.5:**
+- LLM not returning confidence scores in expected format
+- Check verification prompt is being followed
+- Enable debug logging to see raw LLM responses
+
+**Slow Performance:**
+- Switch to smaller model: `llama3.1:8b` → `qwen2.5:3b`
+- Reduce iterations: `MAX_AGENT_ITERATIONS=2`
+- Lower retrieval: `TOP_K_RESULTS=3`
+
+### Model Recommendations
+
+| Model | Context | Speed | Quality | Use Case |
+|-------|---------|-------|---------|----------|
+| llama3.1:8b | 128K | Medium | High | **Recommended** - Best balance |
+| qwen2.5:7b | 32K | Slow | High | High quality answers |
+| qwen2.5:3b | 32K | Fast | Medium | Development/testing |
+| qwen3.5:4b | 8K | Slow | Medium | ⚠️ Has "thinking mode" issues |
+
+**Important:** Avoid `qwen3.5:4b` - it has a "thinking mode" feature that causes empty responses.
+
+## 📞 Support
 
 For issues and questions, please open a GitHub issue.

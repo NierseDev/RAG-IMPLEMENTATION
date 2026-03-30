@@ -28,17 +28,17 @@ class Settings(BaseSettings):
     ollama_timeout: int = Field(default=300, description="Ollama API timeout in seconds")
     
     # Context Length Limits (adjust based on your models)
-    llm_context_window: int = Field(default=8192, description="LLM model context window size in tokens")
+    llm_context_window: int = Field(default=262144, description="LLM model context window size in tokens (256k)")
     embedding_context_window: int = Field(default=512, description="Embedding model context window size in tokens")
-    max_output_tokens: int = Field(default=1024, description="Maximum tokens for LLM output")
-    context_reserve_tokens: int = Field(default=1500, description="Reserve tokens for system prompt and overhead")
+    max_output_tokens: int = Field(default=2048, description="Maximum tokens for LLM output")
+    context_reserve_tokens: int = Field(default=2000, description="Reserve tokens for system prompt and overhead")
     
     # RAG Configuration
     chunk_size: int = Field(default=400, description="Target chunk size in tokens (must fit in embedding context)")
     chunk_overlap: int = Field(default=50, description="Overlap between chunks in tokens")
-    top_k_results: int = Field(default=5, description="Number of results to retrieve per query")
+    top_k_results: int = Field(default=30, description="Number of results to retrieve per query")
     min_similarity: float = Field(default=0.0, description="Minimum similarity threshold for retrieval")
-    max_context_chunks: int = Field(default=8, description="Maximum chunks to include in LLM context")
+    max_context_chunks: int = Field(default=100, description="Maximum chunks to include in LLM context")
     
     # Agent Configuration
     max_agent_iterations: int = Field(default=3, description="Maximum reasoning loop iterations")
