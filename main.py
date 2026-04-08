@@ -64,8 +64,8 @@ if static_path.exists():
 # Root endpoint
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve the debug UI."""
-    html_path = static_path / "index.html"
+    """Serve the home page."""
+    html_path = static_path / "home.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding='utf-8'), status_code=200)
     else:
@@ -77,9 +77,11 @@ async def root():
                     <h1>Agentic RAG API</h1>
                     <p>Welcome to the Agentic RAG system!</p>
                     <ul>
+                        <li><a href="/chat">Agentic Chat</a></li>
+                        <li><a href="/ingest">Document Ingestion</a></li>
                         <li><a href="/docs">API Documentation (Swagger)</a></li>
                         <li><a href="/redoc">API Documentation (ReDoc)</a></li>
-                        <li><a href="/debug">Debug Chatbot</a></li>
+                        <li><a href="/debug">Debug Console (Legacy)</a></li>
                         <li><a href="/health">Health Check</a></li>
                         <li><a href="/stats">Database Stats</a></li>
                     </ul>
@@ -90,9 +92,35 @@ async def root():
         )
 
 
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_interface():
+    """Serve the agentic chat interface."""
+    html_path = static_path / "chat.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text(encoding='utf-8'), status_code=200)
+    else:
+        return HTMLResponse(
+            content="<html><body><h1>Chat interface not found</h1></body></html>",
+            status_code=404
+        )
+
+
+@app.get("/ingest", response_class=HTMLResponse)
+async def ingest_interface():
+    """Serve the document ingestion interface."""
+    html_path = static_path / "ingest.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text(encoding='utf-8'), status_code=200)
+    else:
+        return HTMLResponse(
+            content="<html><body><h1>Ingestion interface not found</h1></body></html>",
+            status_code=404
+        )
+
+
 @app.get("/debug", response_class=HTMLResponse)
 async def debug_console():
-    """Serve the chatbot debug console."""
+    """Serve the legacy debug console."""
     debug_path = static_path / "debug.html"
     if debug_path.exists():
         return HTMLResponse(content=debug_path.read_text(encoding='utf-8'), status_code=200)
