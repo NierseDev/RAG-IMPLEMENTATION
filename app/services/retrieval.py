@@ -1,5 +1,6 @@
 """
 RAG retrieval service for vector search and query processing.
+Enhanced with hybrid search (vector + keyword) support (Sprint 3).
 """
 from typing import List, Optional
 from app.core.database import db
@@ -13,7 +14,32 @@ logger = logging.getLogger(__name__)
 
 
 class RetrievalService:
-    """Service for RAG retrieval operations."""
+    """Service for RAG retrieval operations with hybrid search support."""
+    
+    def __init__(self):
+        """Initialize retrieval service with optional hybrid search."""
+        self.keyword_search = None
+        self.hybrid_fusion = None
+        self.context_optimizer = None
+        
+        # Sprint 3: Load hybrid search components if enabled
+        if settings.use_hybrid_search:
+            try:
+                from app.services.keyword_search import keyword_search_service
+                from app.services.rrf_fusion import hybrid_fusion
+                self.keyword_search = keyword_search_service
+                self.hybrid_fusion = hybrid_fusion
+                logger.info("Hybrid search enabled (vector + keyword with RRF)")
+            except ImportError as e:
+                logger.warning(f"Hybrid search components not available: {e}")
+        
+        # Sprint 3: Load context optimizer
+        try:
+            from app.services.context_optimizer import context_optimizer
+            self.context_optimizer = context_optimizer
+            logger.info("Context optimizer enabled")
+        except ImportError:
+            logger.warning("Context optimizer not available")
     
     async def retrieve(
         self,
@@ -22,35 +48,148 @@ class RetrievalService:
         min_similarity: Optional[float] = None,
         filter_source: Optional[str] = None,
         filter_provider: Optional[str] = None,
-        filter_model: Optional[str] = None
+        filter_model: Optional[str] = None,
+        use_hybrid: Optional[bool] = None
     ) -> List[RetrievalResult]:
         """
         Retrieve relevant chunks for a query.
+        Sprint 3: Supports hybrid search (vector + keyword).
         """
         try:
-            # Generate query embedding
-            query_embedding = await embedding_service.embed_text(query)
+            # Sprint 3: Optimize top_k using context optimizer if available
+            if top_k is None:
+                if self.context_optimizer:
+                    top_k = self.context_optimizer.calculate_optimal_top_k(query)
+                    logger.info(f"Context optimizer suggested top_k={top_k}")
+                else:
+                    top_k = settings.top_k_results
             
             # Use defaults from config if not provided
-            top_k = top_k or settings.top_k_results
             min_similarity = min_similarity or settings.min_similarity
+            use_hybrid = use_hybrid if use_hybrid is not None else settings.use_hybrid_search
             
-            # Search for similar chunks
-            results = await db.search_similar(
-                query_embedding=query_embedding,
-                top_k=top_k,
-                min_similarity=min_similarity,
-                filter_source=filter_source,
-                filter_provider=filter_provider,
-                filter_model=filter_model
-            )
-            
-            logger.info(f"Retrieved {len(results)} chunks for query: {query[:50]}...")
-            return results
+            # Sprint 3: Use hybrid search if enabled and available
+            if use_hybrid and self.keyword_search and self.hybrid_fusion:
+                return await self._hybrid_retrieve(
+                    query=query,
+                    top_k=top_k,
+                    min_similarity=min_similarity,
+                    filter_source=filter_source,
+                    filter_provider=filter_provider,
+                    filter_model=filter_model
+                )
+            else:
+                # Fall back to vector-only search
+                return await self._vector_retrieve(
+                    query=query,
+                    top_k=top_k,
+                    min_similarity=min_similarity,
+                    filter_source=filter_source,
+                    filter_provider=filter_provider,
+                    filter_model=filter_model
+                )
             
         except Exception as e:
             logger.error(f"Error in retrieval: {e}")
             return []
+    
+    async def _vector_retrieve(
+        self,
+        query: str,
+        top_k: int,
+        min_similarity: float,
+        filter_source: Optional[str],
+        filter_provider: Optional[str],
+        filter_model: Optional[str]
+    ) -> List[RetrievalResult]:
+        """Vector-only retrieval (original method)."""
+        # Generate query embedding
+        query_embedding = await embedding_service.embed_text(query)
+        
+        # Search for similar chunks
+        results = await db.search_similar(
+            query_embedding=query_embedding,
+            top_k=top_k,
+            min_similarity=min_similarity,
+            filter_source=filter_source,
+            filter_provider=filter_provider,
+            filter_model=filter_model
+        )
+        
+        logger.info(f"Vector search retrieved {len(results)} chunks")
+        return results
+    
+    async def _hybrid_retrieve(
+        self,
+        query: str,
+        top_k: int,
+        min_similarity: float,
+        filter_source: Optional[str],
+        filter_provider: Optional[str],
+        filter_model: Optional[str]
+    ) -> List[RetrievalResult]:
+        """
+        Hybrid retrieval combining vector and keyword search.
+        Sprint 3: Uses RRF to combine results.
+        """
+        # Perform vector search
+        vector_results = await self._vector_retrieve(
+            query=query,
+            top_k=top_k,
+            min_similarity=min_similarity,
+            filter_source=filter_source,
+            filter_provider=filter_provider,
+            filter_model=filter_model
+        )
+        
+        # Perform keyword search
+        keyword_results = await self.keyword_search.search(
+            query=query,
+            top_k=top_k,
+            filter_source=filter_source
+        )
+        
+        logger.info(f"Hybrid search: {len(vector_results)} vector + {len(keyword_results)} keyword results")
+        
+        # Convert to dictionaries for fusion
+        vector_dicts = [self._result_to_dict(r) for r in vector_results]
+        keyword_dicts = [self._result_to_dict(r) for r in keyword_results]
+        
+        # Combine using RRF
+        fused_results = self.hybrid_fusion.combine(
+            vector_results=vector_dicts,
+            keyword_results=keyword_dicts,
+            use_weights=True
+        )
+        
+        # Convert back to RetrievalResult objects
+        final_results = []
+        for item in fused_results[:top_k]:
+            result = RetrievalResult(
+                chunk_id=item['chunk_id'],
+                source=item['source'],
+                text=item['text'],
+                ai_provider=item['ai_provider'],
+                embedding_model=item['embedding_model'],
+                created_at=item['created_at'],
+                similarity=item.get('weighted_rrf_score', item.get('rrf_score', 0.0))
+            )
+            final_results.append(result)
+        
+        logger.info(f"Hybrid fusion produced {len(final_results)} results")
+        return final_results
+    
+    def _result_to_dict(self, result: RetrievalResult) -> dict:
+        """Convert RetrievalResult to dictionary for fusion."""
+        return {
+            'chunk_id': result.chunk_id,
+            'source': result.source,
+            'text': result.text,
+            'ai_provider': result.ai_provider,
+            'embedding_model': result.embedding_model,
+            'created_at': result.created_at,
+            'similarity': result.similarity
+        }
     
     def format_context(
         self, 

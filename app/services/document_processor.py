@@ -1,5 +1,6 @@
 """
 Document processing service using Docling.
+Enhanced with semantic chunking, dynamic sizing, and metadata extraction (Sprint 3).
 """
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
@@ -24,12 +25,48 @@ class DocumentProcessor:
         self.chunk_size = settings.max_chunk_tokens  # Use safe chunk size
         self.chunk_overlap = settings.chunk_overlap
         self.client = get_supabase_client()
+        
+        # Sprint 3: Load advanced chunking and metadata services
+        self.semantic_chunker = None
+        self.dynamic_chunker = None
+        self.metadata_extractor = None
+        
+        if settings.use_semantic_chunking:
+            try:
+                from app.services.semantic_chunker import semantic_chunker
+                self.semantic_chunker = semantic_chunker
+                logger.info("Semantic chunking enabled")
+            except ImportError:
+                logger.warning("Semantic chunker not available, using default chunking")
+        
+        if settings.use_dynamic_chunking:
+            try:
+                from app.services.dynamic_chunker import dynamic_chunker
+                self.dynamic_chunker = dynamic_chunker
+                logger.info("Dynamic chunking enabled")
+            except ImportError:
+                logger.warning("Dynamic chunker not available")
+        
+        try:
+            from app.services.metadata_extractor import metadata_extractor
+            self.metadata_extractor = metadata_extractor
+            logger.info("Metadata extraction enabled")
+        except ImportError:
+            logger.warning("Metadata extractor not available")
+        
         logger.info(f"Document processor initialized (chunk_size={self.chunk_size}, overlap={self.chunk_overlap})")
     
-    async def process_document(self, file_path: str, source: str) -> Tuple[List[RAGChunk], dict]:
+    async def process_document(
+        self,
+        file_path: str,
+        source: str,
+        file_size: int = 0
+    ) -> Tuple[List[RAGChunk], dict]:
         """
         Process a document into chunks with embeddings.
         Returns: (chunks, metadata)
+        
+        Sprint 3: Enhanced with semantic chunking and metadata extraction
         """
         try:
             # Convert document using Docling
@@ -39,7 +76,26 @@ class DocumentProcessor:
             # Extract text content
             text_content = doc.export_to_markdown()
             
-            # Create chunks with size validation
+            # Sprint 3: Extract metadata
+            metadata = {}
+            if self.metadata_extractor:
+                try:
+                    docling_meta = {
+                        'page_count': getattr(doc, 'page_count', None),
+                        'title': getattr(doc, 'title', None),
+                    }
+                    metadata = self.metadata_extractor.extract(
+                        text=text_content,
+                        filename=source,
+                        file_size=file_size,
+                        docling_metadata=docling_meta
+                    )
+                    logger.info(f"Extracted metadata: {list(metadata.keys())}")
+                except Exception as e:
+                    logger.warning(f"Metadata extraction failed: {e}")
+                    metadata = {"error": str(e)}
+            
+            # Create chunks with advanced chunking if available
             chunks_text = self._create_chunks(text_content)
             
             # Validate chunk sizes before embedding
@@ -66,19 +122,21 @@ class DocumentProcessor:
                     chunk_id=chunk_id,
                     source=source,
                     text=chunk_text,
-                    ai_provider="ollama",
-                    embedding_model=settings.ollama_embed_model,
+                    ai_provider=settings.ai_provider,
+                    embedding_model=settings.current_embedding_model,
                     embedding=embedding
                 )
                 chunks.append(chunk)
             
-            metadata = {
+            # Update metadata with processing results
+            metadata.update({
                 "total_chunks": len(chunks),
                 "page_count": getattr(doc, 'page_count', None),
                 "content_type": "document",
                 "original_chunks": len(chunks_text),
-                "successful_chunks": len(chunks)
-            }
+                "successful_chunks": len(chunks),
+                "chunking_method": self._get_chunking_method()
+            })
             
             logger.info(f"Processed document: {source} -> {len(chunks)} chunks (from {len(chunks_text)} attempted)")
             return chunks, metadata
@@ -87,9 +145,45 @@ class DocumentProcessor:
             logger.error(f"Error processing document {file_path}: {e}")
             raise
     
+    def _get_chunking_method(self) -> str:
+        """Get the current chunking method name."""
+        if settings.use_dynamic_chunking and self.dynamic_chunker:
+            return "dynamic"
+        elif settings.use_semantic_chunking and self.semantic_chunker:
+            return "semantic"
+        else:
+            return "fixed"
+    
     def _create_chunks(self, text: str) -> List[str]:
         """
         Split text into chunks with overlap.
+        Sprint 3: Uses semantic or dynamic chunking if enabled.
+        """
+        # Try semantic chunking first
+        if settings.use_semantic_chunking and self.semantic_chunker:
+            try:
+                chunks = self.semantic_chunker.chunk(text, preserve_structure=True)
+                logger.info(f"Used semantic chunking: {len(chunks)} chunks")
+                return chunks
+            except Exception as e:
+                logger.warning(f"Semantic chunking failed: {e}, falling back to default")
+        
+        # Try dynamic chunking
+        if settings.use_dynamic_chunking and self.dynamic_chunker:
+            try:
+                chunk_tuples = self.dynamic_chunker.chunk_with_density(text)
+                chunks = [chunk_text for chunk_text, meta in chunk_tuples]
+                logger.info(f"Used dynamic chunking: {len(chunks)} chunks")
+                return chunks
+            except Exception as e:
+                logger.warning(f"Dynamic chunking failed: {e}, falling back to default")
+        
+        # Fall back to default fixed-size chunking
+        return self._create_chunks_default(text)
+    
+    def _create_chunks_default(self, text: str) -> List[str]:
+        """
+        Default fixed-size chunking with overlap.
         Ensures chunks stay within token limits.
         """
         # Approximate tokens as words (rough estimation: 1 token ≈ 0.75 words)
