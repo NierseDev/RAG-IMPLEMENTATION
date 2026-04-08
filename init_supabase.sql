@@ -207,6 +207,145 @@ SELECT
 FROM get_chunk_stats();
 
 -- =============================================================================
+-- STEP 8: Create documents_registry table (Phase 2.5)
+-- =============================================================================
+
+CREATE TABLE documents_registry (
+    id BIGSERIAL PRIMARY KEY,
+    filename TEXT NOT NULL,
+    file_hash TEXT NOT NULL UNIQUE,
+    file_size BIGINT NOT NULL,
+    upload_date TIMESTAMPTZ DEFAULT now(),
+    source_type TEXT NOT NULL CHECK (source_type IN ('pdf', 'docx', 'pptx', 'html', 'markdown', 'txt', 'other')),
+    status TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed', 'failed')),
+    chunk_count INT DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Indexes for documents_registry
+CREATE INDEX documents_registry_hash_idx ON documents_registry (file_hash);
+CREATE INDEX documents_registry_filename_idx ON documents_registry (filename);
+CREATE INDEX documents_registry_upload_date_idx ON documents_registry (upload_date DESC);
+CREATE INDEX documents_registry_status_idx ON documents_registry (status);
+
+-- =============================================================================
+-- STEP 9: Create document_metadata table (Phase 2.5)
+-- =============================================================================
+
+CREATE TABLE document_metadata (
+    id BIGSERIAL PRIMARY KEY,
+    document_id BIGINT NOT NULL REFERENCES documents_registry(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    value_json JSONB,
+    extracted_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(document_id, key)
+);
+
+-- Indexes for document_metadata
+CREATE INDEX document_metadata_doc_id_idx ON document_metadata (document_id);
+CREATE INDEX document_metadata_key_idx ON document_metadata (key);
+CREATE INDEX document_metadata_json_idx ON document_metadata USING gin (value_json);
+
+-- =============================================================================
+-- STEP 10: Add full-text search to rag_chunks (Phase 2.5)
+-- =============================================================================
+
+-- Add tsvector column for full-text search
+ALTER TABLE rag_chunks ADD COLUMN text_search tsvector;
+
+-- Create GIN index for fast full-text search
+CREATE INDEX rag_chunks_text_search_idx ON rag_chunks USING gin (text_search);
+
+-- Create trigger to automatically update tsvector on insert/update
+CREATE OR REPLACE FUNCTION update_text_search()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.text_search := to_tsvector('english', NEW.text);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_text_search
+BEFORE INSERT OR UPDATE ON rag_chunks
+FOR EACH ROW
+EXECUTE FUNCTION update_text_search();
+
+-- Update existing rows
+UPDATE rag_chunks SET text_search = to_tsvector('english', text) WHERE text_search IS NULL;
+
+-- =============================================================================
+-- STEP 11: Add document_id foreign key to rag_chunks
+-- =============================================================================
+
+ALTER TABLE rag_chunks ADD COLUMN document_id BIGINT REFERENCES documents_registry(id) ON DELETE CASCADE;
+CREATE INDEX rag_chunks_document_id_idx ON rag_chunks (document_id);
+
+-- =============================================================================
+-- STEP 12: Create helper functions for cleanup
+-- =============================================================================
+
+-- Function to cleanup orphaned chunks (chunks without a document)
+CREATE OR REPLACE FUNCTION cleanup_orphaned_chunks()
+RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    DELETE FROM rag_chunks
+    WHERE document_id IS NULL 
+       OR document_id NOT IN (SELECT id FROM documents_registry);
+    
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$;
+
+-- Function to cleanup old failed documents
+CREATE OR REPLACE FUNCTION cleanup_failed_documents(hours INTEGER DEFAULT 24)
+RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    DELETE FROM documents_registry
+    WHERE status = 'failed'
+      AND created_at < NOW() - (hours || ' hours')::INTERVAL;
+    
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$;
+
+-- =============================================================================
+-- STEP 13: Create chat sessions tables (Phase 2)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT 'New Chat',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id BIGSERIAL PRIMARY KEY,
+    session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Indexes for chat tables
+CREATE INDEX chat_messages_session_id_idx ON chat_messages (session_id);
+CREATE INDEX chat_sessions_updated_at_idx ON chat_sessions (updated_at DESC);
+
+-- =============================================================================
 -- SUCCESS MESSAGE
 -- =============================================================================
 

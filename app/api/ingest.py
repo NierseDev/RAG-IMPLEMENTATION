@@ -317,3 +317,97 @@ async def delete_document(source: str):
     except Exception as e:
         logger.error(f"Error deleting document: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Document Management Endpoints (Phase 2)
+# ============================================================================
+
+@router.get("/documents/{document_id}")
+async def get_document_details(document_id: int):
+    """Get detailed information about a specific document."""
+    try:
+        from app.core.database import get_supabase_client
+        client = get_supabase_client()
+        
+        # Get document
+        doc_result = client.table('documents_registry') \
+            .select('*') \
+            .eq('id', document_id) \
+            .execute()
+        
+        if not doc_result.data:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        document = doc_result.data[0]
+        
+        # Get metadata
+        meta_result = client.table('document_metadata') \
+            .select('*') \
+            .eq('document_id', document_id) \
+            .execute()
+        
+        document['metadata'] = meta_result.data if meta_result.data else []
+        
+        return {
+            "success": True,
+            "document": document
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/documents/{document_id}/chunks")
+async def get_document_chunks(
+    document_id: int, 
+    limit: int = 50, 
+    offset: int = 0
+):
+    """Get all chunks for a specific document."""
+    try:
+        from app.core.database import get_supabase_client
+        client = get_supabase_client()
+        
+        result = client.table('rag_chunks') \
+            .select('id, chunk_id, text, created_at', count='exact') \
+            .eq('document_id', document_id) \
+            .order('id', desc=False) \
+            .limit(limit) \
+            .offset(offset) \
+            .execute()
+        
+        return {
+            "success": True,
+            "chunks": result.data,
+            "total": result.count,
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting document chunks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/documents/{document_id}")
+async def delete_document_by_id(document_id: int):
+    """Delete a document and all its associated chunks."""
+    try:
+        from app.services.cleanup import cleanup_service
+        result = await cleanup_service.delete_document_and_chunks(document_id)
+        
+        if result["success"]:
+            return result
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete document"))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document by ID: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

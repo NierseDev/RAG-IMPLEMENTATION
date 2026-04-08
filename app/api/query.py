@@ -2,12 +2,14 @@
 Query endpoints for agentic RAG.
 """
 from fastapi import APIRouter, HTTPException
+from typing import List, Optional
 import time
 from app.models.requests import QueryRequest, SimpleQueryRequest
 from app.models.responses import AgentResponse, SimpleRAGResponse
 from app.services.agent import create_agent
 from app.services.retrieval import retrieval_service
 from app.services.llm import llm_service
+from app.core.database import get_supabase_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -118,3 +120,120 @@ async def simple_query(request: SimpleQueryRequest):
     except Exception as e:
         logger.error(f"Error in simple query: {e}")
         raise HTTPException(status_code=500, detail=f"Query error: {str(e)}")
+
+
+# ============================================================================
+# Chat Session Management Endpoints (Phase 2)
+# ============================================================================
+
+@router.post("/sessions")
+async def create_chat_session(title: Optional[str] = None):
+    """Create a new chat session."""
+    try:
+        client = get_supabase_client()
+        
+        session_data = {
+            "title": title or "New Chat",
+            "created_at": "now()",
+            "updated_at": "now()"
+        }
+        
+        result = client.table('chat_sessions').insert(session_data).execute()
+        
+        if result.data:
+            return {
+                "success": True,
+                "session": result.data[0]
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create session")
+            
+    except Exception as e:
+        logger.error(f"Error creating chat session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions")
+async def list_chat_sessions(limit: int = 50, offset: int = 0):
+    """List all chat sessions."""
+    try:
+        client = get_supabase_client()
+        
+        result = client.table('chat_sessions') \
+            .select('*') \
+            .order('updated_at', desc=True) \
+            .limit(limit) \
+            .offset(offset) \
+            .execute()
+        
+        return {
+            "success": True,
+            "sessions": result.data,
+            "count": len(result.data)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing chat sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/{session_id}")
+async def get_chat_session(session_id: int):
+    """Get a specific chat session with its messages."""
+    try:
+        client = get_supabase_client()
+        
+        # Get session
+        session_result = client.table('chat_sessions') \
+            .select('*') \
+            .eq('id', session_id) \
+            .execute()
+        
+        if not session_result.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Get messages
+        messages_result = client.table('chat_messages') \
+            .select('*') \
+            .eq('session_id', session_id) \
+            .order('created_at', desc=False) \
+            .execute()
+        
+        return {
+            "success": True,
+            "session": session_result.data[0],
+            "messages": messages_result.data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting chat session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_chat_session(session_id: int):
+    """Delete a chat session and all its messages."""
+    try:
+        client = get_supabase_client()
+        
+        result = client.table('chat_sessions') \
+            .delete() \
+            .eq('id', session_id) \
+            .execute()
+        
+        if result.data:
+            return {
+                "success": True,
+                "message": "Session deleted successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting chat session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

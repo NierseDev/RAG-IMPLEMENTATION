@@ -1,12 +1,14 @@
 """
 Document processing service using Docling.
 """
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
 import hashlib
 from docling.document_converter import DocumentConverter
 from app.core.config import settings
 from app.core.text_utils import estimate_tokens, truncate_to_token_limit
+from app.core.hash_utils import compute_stream_hash, compute_bytes_hash
+from app.core.database import get_supabase_client
 from app.models.entities import RAGChunk
 from app.services.embedding import embedding_service
 import logging
@@ -21,6 +23,7 @@ class DocumentProcessor:
         self.converter = DocumentConverter()
         self.chunk_size = settings.max_chunk_tokens  # Use safe chunk size
         self.chunk_overlap = settings.chunk_overlap
+        self.client = get_supabase_client()
         logger.info(f"Document processor initialized (chunk_size={self.chunk_size}, overlap={self.chunk_overlap})")
     
     async def process_document(self, file_path: str, source: str) -> Tuple[List[RAGChunk], dict]:
@@ -145,6 +148,119 @@ class DocumentProcessor:
             return False, f"File type not supported. Allowed: {', '.join(settings.allowed_extensions)}"
         
         return True, "Valid"
+    
+    async def check_duplicate(self, file_hash: str) -> Optional[Dict[str, Any]]:
+        """
+        Check if a file with the same hash already exists.
+        
+        Args:
+            file_hash: SHA-256 hash of the file
+            
+        Returns:
+            Existing document record if found, None otherwise
+        """
+        try:
+            result = self.client.table('documents_registry') \
+                .select('*') \
+                .eq('file_hash', file_hash) \
+                .execute()
+            
+            if result.data and len(result.data) > 0:
+                logger.info(f"Found duplicate document with hash {file_hash[:16]}...")
+                return result.data[0]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking for duplicate: {e}")
+            return None
+    
+    async def handle_duplicate(
+        self, 
+        file_hash: str, 
+        filename: str, 
+        mode: str = 'skip'
+    ) -> Dict[str, Any]:
+        """
+        Handle duplicate file upload based on mode.
+        
+        Args:
+            file_hash: SHA-256 hash of the file
+            filename: Name of the file
+            mode: 'skip', 'replace', or 'append'
+            
+        Returns:
+            Action result dictionary
+        """
+        existing = await self.check_duplicate(file_hash)
+        
+        if not existing:
+            return {
+                "action": "proceed",
+                "message": "No duplicate found, proceed with upload"
+            }
+        
+        if mode == 'skip':
+            return {
+                "action": "skipped",
+                "document_id": existing['id'],
+                "message": f"Skipped: File already exists (uploaded on {existing['upload_date']})"
+            }
+        
+        elif mode == 'replace':
+            # Delete old document and its chunks (CASCADE)
+            try:
+                self.client.table('documents_registry') \
+                    .delete() \
+                    .eq('id', existing['id']) \
+                    .execute()
+                
+                logger.info(f"Replaced existing document {existing['id']}")
+                return {
+                    "action": "replaced",
+                    "old_document_id": existing['id'],
+                    "message": f"Replaced existing file"
+                }
+                
+            except Exception as e:
+                logger.error(f"Error replacing document: {e}")
+                return {
+                    "action": "error",
+                    "message": f"Failed to replace: {str(e)}"
+                }
+        
+        elif mode == 'append':
+            # Allow duplicate but with different source name
+            new_filename = self._generate_unique_filename(filename, existing['filename'])
+            return {
+                "action": "append",
+                "new_filename": new_filename,
+                "message": f"Appending as {new_filename}"
+            }
+        
+        else:
+            return {
+                "action": "error",
+                "message": f"Invalid duplicate mode: {mode}"
+            }
+    
+    def _generate_unique_filename(self, filename: str, existing_filename: str) -> str:
+        """Generate a unique filename by adding a counter."""
+        path = Path(filename)
+        stem = path.stem
+        suffix = path.suffix
+        counter = 1
+        
+        # Extract counter from existing filename if present
+        if '_v' in existing_filename:
+            try:
+                parts = existing_filename.rsplit('_v', 1)
+                if len(parts) == 2:
+                    counter = int(parts[1].split('.')[0]) + 1
+            except:
+                pass
+        
+        return f"{stem}_v{counter}{suffix}"
 
 
 # Global document processor instance
