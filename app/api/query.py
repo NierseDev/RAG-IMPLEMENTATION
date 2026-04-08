@@ -55,6 +55,41 @@ async def agentic_query(request: QueryRequest):
         if not state.final_answer:
             logger.error("DEBUG: final_answer is None! This is why 'Unable to generate answer' appears")
         
+        # Sprint 3: Build detailed trace data
+        from app.models.responses import RetrievedChunkTrace, VerificationTrace
+        
+        # Convert retrieved docs to detailed traces
+        retrieved_chunks_detail = []
+        for doc in state.retrieved_docs:
+            retrieved_chunks_detail.append(RetrievedChunkTrace(
+                chunk_id=doc.chunk_id,
+                source=doc.source,
+                text=doc.text[:500],  # Truncate for response size
+                similarity=doc.similarity,
+                iteration_retrieved=1  # Could track which iteration retrieved this
+            ))
+        
+        # Convert verification results to detailed traces
+        verification_detail = []
+        for idx, verification in enumerate(state.verification_results, 1):
+            verification_detail.append(VerificationTrace(
+                verified=verification.get('verified', False),
+                confidence=verification.get('confidence', 0.0),
+                issues=verification.get('issues', []),
+                grounded_claims=verification.get('grounded_claims', 0),
+                total_claims=verification.get('total_claims', 0),
+                iteration=idx
+            ))
+        
+        # Build agent steps trace
+        agent_steps = []
+        for reasoning in state.reasoning:
+            agent_steps.append({
+                'description': reasoning,
+                'timestamp': processing_time
+            })
+        
+        # Sprint 3: Enhanced response with detailed trace data
         return AgentResponse(
             query=state.original_query,
             answer=answer_text,
@@ -64,7 +99,12 @@ async def agentic_query(request: QueryRequest):
             iterations=state.iteration,
             retrieved_chunks=len(state.retrieved_docs),
             verification_passed=all(v.get('verified', False) for v in state.verification_results),
-            processing_time=processing_time
+            processing_time=processing_time,
+            # Sprint 3 additions
+            retrieved_chunks_detail=retrieved_chunks_detail,
+            verification_detail=verification_detail,
+            agent_steps=agent_steps,
+            tool_calls=[]  # TODO: Track tool calls from agent
         )
     
     except Exception as e:

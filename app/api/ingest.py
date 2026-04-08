@@ -41,14 +41,29 @@ async def ingest_document(
         if not valid:
             raise HTTPException(status_code=400, detail=message)
         
+        # Sprint 3: Calculate file hash for duplicate detection
+        file_hash = compute_bytes_hash(content)
+        
+        # Sprint 3: Check for duplicates
+        duplicate = await document_processor.check_duplicate(file_hash)
+        validation_warnings = []
+        
+        if duplicate:
+            validation_warnings.append(f"File already exists (uploaded {duplicate['upload_date']})")
+            # For now, proceed anyway - could add duplicate_mode parameter
+        
         # Save to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
         
         try:
-            # Process document
-            chunks, metadata = await document_processor.process_document(tmp_path, source)
+            # Process document (Sprint 3: now includes metadata extraction)
+            chunks, metadata = await document_processor.process_document(
+                file_path=tmp_path,
+                source=source,
+                file_size=file_size
+            )
             
             if not chunks:
                 raise HTTPException(status_code=400, detail="No content could be extracted from document")
@@ -58,13 +73,18 @@ async def ingest_document(
             
             processing_time = time.time() - start_time
             
+            # Sprint 3: Enhanced response with validation and metadata
             return IngestResponse(
                 success=True,
-                message=f"Document processed successfully",
+                message=f"Document processed successfully using {metadata.get('chunking_method', 'default')} chunking",
                 source=source,
                 chunks_created=inserted,
                 file_size=file_size,
-                processing_time=processing_time
+                processing_time=processing_time,
+                file_hash=file_hash,
+                duplicate_action="appended" if duplicate else "new",
+                validation_warnings=validation_warnings,
+                metadata_extracted=metadata
             )
             
         finally:
