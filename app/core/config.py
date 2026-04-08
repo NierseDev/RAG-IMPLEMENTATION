@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     min_similarity: float = Field(default=0.0, description="Minimum similarity threshold for retrieval")
     max_context_chunks: int = Field(default=100, description="Maximum chunks to include in LLM context")
     
+    # Sprint 3: Advanced Retrieval Configuration
+    min_retrieval_chunks: int = Field(default=3, description="Minimum chunks to retrieve")
+    max_retrieval_chunks: int = Field(default=20, description="Maximum chunks to retrieve")
+    use_semantic_chunking: bool = Field(default=True, description="Use semantic chunking instead of fixed-size")
+    use_dynamic_chunking: bool = Field(default=False, description="Use dynamic chunk sizing based on density")
+    use_hybrid_search: bool = Field(default=True, description="Enable hybrid search (vector + keyword)")
+    hybrid_vector_weight: float = Field(default=0.7, description="Weight for vector search in hybrid mode")
+    hybrid_keyword_weight: float = Field(default=0.3, description="Weight for keyword search in hybrid mode")
+    
     # Agent Configuration
     max_agent_iterations: int = Field(default=3, description="Maximum reasoning loop iterations")
     min_confidence_threshold: float = Field(default=0.7, description="Minimum confidence to provide answer")

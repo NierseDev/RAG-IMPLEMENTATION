@@ -181,3 +181,11 @@ db = SupabaseClient()
 
 # Expose the Supabase client for direct access
 supabase = db.client
+
+
+def get_supabase_client() -> Client:
+    """
+    Get the global Supabase client instance.
+    Backward compatibility function for code that expects this interface.
+    """
+    return db.client

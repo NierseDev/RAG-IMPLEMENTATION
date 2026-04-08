@@ -7,13 +7,19 @@ from pydantic import BaseModel, Field
 
 
 class IngestResponse(BaseModel):
-    """Response from document ingestion."""
+    """Response from document ingestion with validation details."""
     success: bool
     message: str
     source: str
     chunks_created: int = 0
     file_size: Optional[int] = None
     processing_time: Optional[float] = None
+    
+    # Enhanced validation data (Sprint 3)
+    file_hash: Optional[str] = None
+    duplicate_action: Optional[str] = None  # "skip", "replace", "append"
+    validation_warnings: List[str] = Field(default_factory=list)
+    metadata_extracted: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchIngestResponse(BaseModel):
@@ -28,8 +34,27 @@ class BatchIngestResponse(BaseModel):
     total_processing_time: float = 0
 
 
+class RetrievedChunkTrace(BaseModel):
+    """Detailed trace information for a retrieved chunk."""
+    chunk_id: str
+    source: str
+    text: str
+    similarity: float
+    iteration_retrieved: int
+
+
+class VerificationTrace(BaseModel):
+    """Detailed verification result trace."""
+    verified: bool
+    confidence: float
+    issues: List[str] = Field(default_factory=list)
+    grounded_claims: int = 0
+    total_claims: int = 0
+    iteration: int
+
+
 class AgentResponse(BaseModel):
-    """Response from agentic RAG query."""
+    """Response from agentic RAG query with detailed trace data."""
     query: str
     answer: str
     confidence: Optional[float] = None
@@ -39,6 +64,12 @@ class AgentResponse(BaseModel):
     retrieved_chunks: int = 0
     verification_passed: bool = True
     processing_time: Optional[float] = None
+    
+    # Enhanced trace data (Sprint 3)
+    retrieved_chunks_detail: List[RetrievedChunkTrace] = Field(default_factory=list)
+    verification_detail: List[VerificationTrace] = Field(default_factory=list)
+    agent_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class SimpleRAGResponse(BaseModel):
