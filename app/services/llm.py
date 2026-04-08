@@ -1,24 +1,80 @@
 """
-LLM service using Ollama for agent reasoning.
+LLM service with multi-provider support and prompt management.
 """
 from typing import Optional, AsyncGenerator
-import ollama
 from app.core.config import settings
 from app.core.text_utils import estimate_tokens, truncate_to_token_limit
+from app.services.llm_providers import create_llm_provider
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Service for LLM interactions using Ollama."""
+    """Service for LLM interactions with multi-provider support."""
     
     def __init__(self):
-        self.client = ollama.Client(host=settings.ollama_base_url)
-        self.model = settings.ollama_llm_model
         self.max_context_tokens = settings.max_context_tokens
         self.max_output_tokens = settings.max_output_tokens
-        logger.info(f"LLM service initialized with model: {self.model} (context: {self.max_context_tokens}, output: {self.max_output_tokens})")
+        
+        # Initialize provider based on configuration
+        self._init_provider()
+        
+        logger.info(f"LLM service initialized")
+        logger.info(f"  Provider: {settings.ai_provider}")
+        logger.info(f"  Model: {settings.current_llm_model}")
+        logger.info(f"  Context: {self.max_context_tokens} tokens")
+        logger.info(f"  Max output: {self.max_output_tokens} tokens")
+    
+    def _init_provider(self):
+        """Initialize the LLM provider based on configuration."""
+        provider = settings.ai_provider
+        
+        if provider == "ollama":
+            self.provider = create_llm_provider(
+                provider="ollama",
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_llm_model,
+                max_output_tokens=self.max_output_tokens
+            )
+        elif provider == "openai":
+            if not settings.openai_api_key:
+                raise ValueError("OPENAI_API_KEY not set in environment")
+            self.provider = create_llm_provider(
+                provider="openai",
+                api_key=settings.openai_api_key,
+                model=settings.openai_model,
+                max_output_tokens=self.max_output_tokens
+            )
+        elif provider == "anthropic":
+            if not settings.anthropic_api_key:
+                raise ValueError("ANTHROPIC_API_KEY not set in environment")
+            self.provider = create_llm_provider(
+                provider="anthropic",
+                api_key=settings.anthropic_api_key,
+                model=settings.anthropic_model,
+                max_output_tokens=self.max_output_tokens
+            )
+        elif provider == "google":
+            if not settings.google_api_key:
+                raise ValueError("GOOGLE_API_KEY not set in environment")
+            self.provider = create_llm_provider(
+                provider="google",
+                api_key=settings.google_api_key,
+                model=settings.google_model,
+                max_output_tokens=self.max_output_tokens
+            )
+        elif provider == "groq":
+            if not settings.groq_api_key:
+                raise ValueError("GROQ_API_KEY not set in environment")
+            self.provider = create_llm_provider(
+                provider="groq",
+                api_key=settings.groq_api_key,
+                model=settings.groq_model,
+                max_output_tokens=self.max_output_tokens
+            )
+        else:
+            raise ValueError(f"Unsupported AI provider: {provider}")
     
     def _validate_and_truncate_prompt(
         self, 
@@ -72,70 +128,35 @@ class LLMService:
             # Validate and truncate if needed
             prompt, system = self._validate_and_truncate_prompt(prompt, system, max_tokens)
             
-            # Add instruction to disable thinking mode if no system message
+            # Add default system message if none provided
             if not system:
                 system = "You are a helpful AI assistant. Provide your answer directly without showing your thinking process."
             
-            # DEBUG: Log prompt details
+            # DEBUG: Log generation details
             logger.info("=" * 80)
             logger.info("DEBUG LLM: Generating response")
-            logger.info(f"  Model: {self.model}")
+            logger.info(f"  Provider: {settings.ai_provider}")
+            logger.info(f"  Model: {settings.current_llm_model}")
             logger.info(f"  Temperature: {temperature}")
             logger.info(f"  Max tokens: {max_tokens if max_tokens else self.max_output_tokens}")
-            logger.info(f"  System prompt length: {len(system) if system else 0}")
-            logger.info(f"  User prompt length: {len(prompt)}")
-            logger.info(f"  User prompt preview: {prompt[:200]}...")
+            logger.info(f"  System length: {len(system) if system else 0}")
+            logger.info(f"  Prompt length: {len(prompt)}")
+            logger.info(f"  Prompt preview: {prompt[:200]}...")
             logger.info("=" * 80)
             
-            messages = []
-            if system:
-                messages.append({"role": "system", "content": system})
-            messages.append({"role": "user", "content": prompt})
-            
-            response = self.client.chat(
-                model=self.model,
-                messages=messages,
-                options={
-                    "temperature": temperature,
-                    "num_predict": max_tokens if max_tokens else self.max_output_tokens,
-                    "enable_thinking": False  # Disable thinking mode - use all tokens for content
-                }
+            # Generate using provider
+            content = await self.provider.generate(
+                prompt=prompt,
+                system=system,
+                temperature=temperature,
+                max_tokens=max_tokens
             )
             
-            # DEBUG: Log raw response (ChatResponse object supports dict-like access)
-            logger.info("=" * 80)
-            logger.info(f"DEBUG LLM: Response type: {type(response)}")
-            try:
-                content = response['message']['content']
-                thinking = response['message'].get('thinking', None)
-                
-                logger.info(f"DEBUG LLM: Content length: {len(content) if content else 0}")
-                logger.info(f"DEBUG LLM: Thinking length: {len(thinking) if thinking else 0}")
-                
-                # If content is empty but thinking exists, use thinking as content
-                if (not content or len(content.strip()) == 0) and thinking:
-                    logger.warning("DEBUG LLM: Content is empty but 'thinking' field has data!")
-                    logger.warning("DEBUG LLM: Using 'thinking' content as fallback")
-                    content = thinking
-                    logger.info(f"DEBUG LLM: Using thinking content ({len(content)} chars)")
-                
-                logger.info(f"DEBUG LLM: Final content preview: {repr(content[:200]) if content else 'EMPTY'}")
-                
-                if not content or len(content.strip()) == 0:
-                    logger.error("DEBUG LLM: ⚠️ COMPLETELY EMPTY RESPONSE!")
-                    logger.error(f"DEBUG LLM: Full response: {response}")
-                    logger.error(f"DEBUG LLM: Done reason: {response.get('done_reason', 'unknown')}")
-                else:
-                    logger.info(f"DEBUG LLM: ✅ Response received ({len(content)} chars)")
-            except Exception as e:
-                logger.error(f"DEBUG LLM: Error in debug logging: {e}")
-                # Don't let debug logging break the actual response
-                content = response['message']['content']
-                if not content:
-                    content = ""
+            logger.info(f"DEBUG LLM: ✅ Response received ({len(content)} chars)")
             logger.info("=" * 80)
             
             return content
+            
         except Exception as e:
             error_msg = str(e).lower()
             if any(keyword in error_msg for keyword in ["context", "length", "token", "too long"]):
@@ -143,33 +164,18 @@ class LLMService:
                 # Try with more aggressive truncation
                 try:
                     logger.info("Retrying with more aggressive truncation")
-                    prompt_tokens = estimate_tokens(prompt)
-                    system_tokens = estimate_tokens(system) if system else 0
-                    # Use only 60% of available space
                     safe_limit = int(self.max_context_tokens * 0.6)
                     
                     if system:
                         system = truncate_to_token_limit(system, safe_limit // 3)
                     prompt = truncate_to_token_limit(prompt, safe_limit // 3 * 2)
                     
-                    messages = []
-                    if system:
-                        messages.append({"role": "system", "content": system})
-                    messages.append({"role": "user", "content": prompt})
-                    
-                    response = self.client.chat(
-                        model=self.model,
-                        messages=messages,
-                        options={
-                            "temperature": temperature,
-                            "num_predict": max_tokens if max_tokens else self.max_output_tokens // 2,
-                            "enable_thinking": False  # Disable thinking mode
-                        }
+                    content = await self.provider.generate(
+                        prompt=prompt,
+                        system=system,
+                        temperature=temperature,
+                        max_tokens=max_tokens or self.max_output_tokens // 2
                     )
-                    # Handle thinking mode in retry too
-                    content = response['message']['content']
-                    if not content and response['message'].get('thinking'):
-                        content = response['message']['thinking']
                     return content
                 except Exception as retry_error:
                     logger.error(f"Retry failed: {retry_error}")
@@ -178,40 +184,12 @@ class LLMService:
             logger.error(f"Error generating LLM response: {e}")
             raise
     
-    async def generate_stream(
-        self,
-        prompt: str,
-        system: Optional[str] = None,
-        temperature: float = 0.7
-    ) -> AsyncGenerator[str, None]:
-        """Generate a streaming response from the LLM."""
-        try:
-            messages = []
-            if system:
-                messages.append({"role": "system", "content": system})
-            messages.append({"role": "user", "content": prompt})
-            
-            stream = self.client.chat(
-                model=self.model,
-                messages=messages,
-                stream=True,
-                options={"temperature": temperature}
-            )
-            
-            for chunk in stream:
-                if 'message' in chunk and 'content' in chunk['message']:
-                    yield chunk['message']['content']
-        except Exception as e:
-            logger.error(f"Error in streaming generation: {e}")
-            raise
-    
     async def check_availability(self) -> bool:
-        """Check if LLM model is available."""
+        """Check if LLM provider is available."""
         try:
-            response = await self.generate("test", max_tokens=5)
-            return len(response) > 0
+            return await self.provider.check_availability()
         except Exception as e:
-            logger.error(f"LLM model not available: {e}")
+            logger.error(f"LLM provider not available: {e}")
             return False
     
     # Prompt templates for different agent phases

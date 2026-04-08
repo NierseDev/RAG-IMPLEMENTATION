@@ -4,7 +4,7 @@ Uses Pydantic Settings for environment variable management.
 """
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Literal
+from typing import Literal, Optional
 
 
 class Settings(BaseSettings):
@@ -21,14 +21,41 @@ class Settings(BaseSettings):
     supabase_url: str = Field(..., description="Supabase project URL")
     supabase_service_role_key: str = Field(..., description="Supabase service role key for database access")
     
-    # Ollama Configuration
+    # ============================================================================
+    # AI Provider Configuration
+    # ============================================================================
+    ai_provider: Literal["ollama", "openai", "anthropic", "google", "groq"] = Field(
+        default="ollama",
+        description="AI provider to use: ollama (local), openai, anthropic, google, groq"
+    )
+    
+    # Ollama Configuration (Local)
     ollama_base_url: str = Field(default="http://localhost:11434", description="Ollama API base URL")
     ollama_llm_model: str = Field(default="qwen3.5:4b", description="Ollama LLM model for agent reasoning")
     ollama_embed_model: str = Field(default="mxbai-embed-large", description="Ollama embedding model")
     ollama_timeout: int = Field(default=300, description="Ollama API timeout in seconds")
     
-    # Context Length Limits (adjust based on your models)
-    llm_context_window: int = Field(default=262144, description="LLM model context window size in tokens (256k)")
+    # Cloud Provider API Keys
+    openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
+    anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
+    google_api_key: Optional[str] = Field(default=None, description="Google AI API key")
+    groq_api_key: Optional[str] = Field(default=None, description="Groq API key")
+    
+    # Cloud Model Configuration
+    openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model: gpt-4o-mini, gpt-4o, etc.")
+    anthropic_model: str = Field(default="claude-3-5-sonnet-20241022", description="Anthropic model: claude-3-5-sonnet, etc.")
+    google_model: str = Field(default="gemini-2.0-flash-exp", description="Google model: gemini-2.0-flash-exp, gemini-1.5-pro, etc.")
+    groq_model: str = Field(default="llama-3.3-70b-versatile", description="Groq model: llama-3.3-70b-versatile, etc.")
+    
+    # Embedding Provider (can be different from LLM provider)
+    embedding_provider: Literal["ollama", "openai"] = Field(
+        default="ollama",
+        description="Embedding provider: ollama (local), openai"
+    )
+    openai_embedding_model: str = Field(default="text-embedding-3-small", description="OpenAI embedding model")
+    
+    # Context Length Limits (auto-adjusted based on provider/model)
+    llm_context_window: int = Field(default=262144, description="LLM model context window size in tokens")
     embedding_context_window: int = Field(default=512, description="Embedding model context window size in tokens")
     max_output_tokens: int = Field(default=2048, description="Maximum tokens for LLM output")
     context_reserve_tokens: int = Field(default=2000, description="Reserve tokens for system prompt and overhead")
@@ -84,13 +111,48 @@ class Settings(BaseSettings):
     
     @property
     def embedding_dimensions(self) -> int:
-        """Get embedding dimensions based on model."""
-        # mxbai-embed-large uses 1024 dimensions
-        if "mxbai" in self.ollama_embed_model.lower():
+        """Get embedding dimensions based on provider and model."""
+        if self.embedding_provider == "ollama":
+            # mxbai-embed-large: 1024, nomic-embed-text: 768
+            if "mxbai" in self.ollama_embed_model.lower():
+                return 1024
+            elif "nomic" in self.ollama_embed_model.lower():
+                return 768
             return 1024
-        # OpenAI text-embedding-3-small uses 1536 (for future support)
+        elif self.embedding_provider == "openai":
+            # text-embedding-3-small: 1536, text-embedding-3-large: 3072
+            if "small" in self.openai_embedding_model.lower():
+                return 1536
+            elif "large" in self.openai_embedding_model.lower():
+                return 3072
+            return 1536
         return 1024
+    
+    @property
+    def current_llm_model(self) -> str:
+        """Get the current LLM model based on provider."""
+        if self.ai_provider == "ollama":
+            return self.ollama_llm_model
+        elif self.ai_provider == "openai":
+            return self.openai_model
+        elif self.ai_provider == "anthropic":
+            return self.anthropic_model
+        elif self.ai_provider == "google":
+            return self.google_model
+        elif self.ai_provider == "groq":
+            return self.groq_model
+        return self.ollama_llm_model
+    
+    @property
+    def current_embedding_model(self) -> str:
+        """Get the current embedding model based on provider."""
+        if self.embedding_provider == "ollama":
+            return self.ollama_embed_model
+        elif self.embedding_provider == "openai":
+            return self.openai_embedding_model
+        return self.ollama_embed_model
 
 
 # Global settings instance
 settings = Settings()
+
