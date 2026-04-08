@@ -178,3 +178,6 @@ class SupabaseClient:
 
 # Global database client instance
 db = SupabaseClient()
+
+# Expose the Supabase client for direct access
+supabase = db.client
