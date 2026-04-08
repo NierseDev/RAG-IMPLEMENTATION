@@ -451,7 +451,7 @@
                     <h3>If file already exists:</h3>
                     <div class="radio-group">
                         <label class="radio-option">
-                            <input type="radio" name="duplicate" value="skip" checked>
+                            <input type="radio" name="duplicate" id="duplicateMode" value="skip" checked>
                             <span>Skip</span>
                         </label>
                         <label class="radio-option">
@@ -465,8 +465,8 @@
                     </div>
                 </div>
 
-                <!-- Selected Files List -->
-                <div id="selectedFilesContainer"></div>
+                <!-- Upload Progress -->
+                <div id="uploadProgress" style="display: none; margin-top: 15px; padding: 10px; background: #edf2f7; border-radius: 6px; font-size: 13px; color: #2d3748;"></div>
             </div>
 
             <!-- History Table -->
@@ -481,13 +481,13 @@
                             <tr>
                                 <th>Filename</th>
                                 <th>Size</th>
-                                <th>Status</th>
-                                <th>Chunks</th>
                                 <th>Date</th>
+                                <th>Chunks</th>
+                                <th>Status</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="documentTableBody">
+                        <tbody id="docTableBody">
                             <tr>
                                 <td colspan="6">
                                     <div class="empty-state">
@@ -521,11 +521,11 @@
                     </div>
                     <div class="stat-item">
                         <span class="stat-label">Processing:</span>
-                        <span class="stat-value" id="processing">0</span>
+                        <span class="stat-value" id="processingDocs">0</span>
                     </div>
                     <div class="stat-item">
-                        <span class="stat-label">Failed:</span>
-                        <span class="stat-value" id="failed">0</span>
+                        <span class="stat-label">Completed:</span>
+                        <span class="stat-value" id="completedDocs">0</span>
                     </div>
                 </div>
 
@@ -591,49 +591,10 @@
         </div>
     </div>
 
-    <script>
-        // This is a skeleton - actual API integration will be added later
-        console.log('Document Ingestion UI loaded');
-        
-        const uploadBox = document.getElementById('uploadBox');
-        const fileInput = document.getElementById('fileInput');
-        const browseBtn = document.getElementById('browseBtn');
-        
-        // Click to browse
-        browseBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            fileInput.click();
-        });
-        
-        uploadBox.addEventListener('click', () => {
-            fileInput.click();
-        });
-        
-        // Drag and drop
-        uploadBox.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadBox.classList.add('dragover');
-        });
-        
-        uploadBox.addEventListener('dragleave', () => {
-            uploadBox.classList.remove('dragover');
-        });
-        
-        uploadBox.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadBox.classList.remove('dragover');
-            const files = e.dataTransfer.files;
-            handleFiles(files);
-        });
-        
-        fileInput.addEventListener('change', (e) => {
-            handleFiles(e.target.files);
-        });
-        
-        function handleFiles(files) {
-            console.log('Files selected:', files.length);
-            // File handling logic will be added later
-        }
-    </script>
+    <!-- Load shared components first -->
+    <script src="/static/js/components.js"></script>
+    
+    <!-- Load ingestion application -->
+    <script src="/static/js/ingest-app.js"></script>
 </body>
 </html>

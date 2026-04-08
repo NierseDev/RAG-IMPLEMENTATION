@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic RAG System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 42px;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            font-size: 18px;
+            opacity: 0.9;
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            text-decoration: none;
+            color: #2d3748;
+            transition: transform 0.3s, box-shadow 0.3s;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+        }
+
+        .card-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+
+        .card-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #2d3748;
+        }
+
+        .card-description {
+            font-size: 14px;
+            color: #718096;
+            line-height: 1.6;
+        }
+
+        .api-links {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .api-link {
+            background: white;
+            color: #667eea;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.3s;
+        }
+
+        .api-link:hover {
+            background: #f7fafc;
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 30px;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Agentic RAG System</h1>
+            <p>Intelligent document retrieval with multi-step reasoning</p>
+        </div>
+
+        <div class="card-grid">
+            <a href="/chat" class="card">
+                <div class="card-icon">💬</div>
+                <div class="card-title">Chat Interface</div>
+                <div class="card-description">
+                    Ask questions with agentic reasoning, view chat history, and monitor agent status in real-time
+                </div>
+            </a>
+
+            <a href="/ingest" class="card">
+                <div class="card-icon">📄</div>
+                <div class="card-title">Document Ingestion</div>
+                <div class="card-description">
+                    Upload documents, manage your knowledge base, and track processing status
+                </div>
+            </a>
+
+            <a href="/debug" class="card">
+                <div class="card-icon">🔧</div>
+                <div class="card-title">Debug Console</div>
+                <div class="card-description">
+                    Legacy debug interface with detailed reasoning traces and system diagnostics
+                </div>
+            </a>
+        </div>
+
+        <div class="api-links">
+            <a href="/docs" class="api-link">📚 API Documentation</a>
+            <a href="/health" class="api-link">💚 Health Check</a>
+            <a href="/stats" class="api-link">📊 Database Stats</a>
+        </div>
+
+        <div class="footer">
+            <p>Powered by Ollama, Supabase, and FastAPI</p>
+        </div>
+    </div>
+</body>
+</html>
