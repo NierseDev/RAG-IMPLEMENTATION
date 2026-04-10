@@ -4,12 +4,14 @@ Verifies the complete pipeline from API endpoint to database.
 """
 import asyncio
 import logging
+import pytest
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 
+@pytest.mark.asyncio
 async def test_query_service_import():
     """Test that QueryService can be imported and initialized."""
     logger.info("=" * 80)
@@ -34,6 +36,7 @@ async def test_query_service_import():
         return False
 
 
+@pytest.mark.asyncio
 async def test_response_models():
     """Test that new response models are properly defined."""
     logger.info("=" * 80)
@@ -72,6 +75,7 @@ async def test_response_models():
         return False
 
 
+@pytest.mark.asyncio
 async def test_request_models():
     """Test that request models include new fields."""
     logger.info("=" * 80)
@@ -105,6 +109,7 @@ async def test_request_models():
         return False
 
 
+@pytest.mark.asyncio
 async def test_api_endpoint_registration():
     """Test that the hybrid search endpoint is properly registered."""
     logger.info("=" * 80)
@@ -132,6 +137,7 @@ async def test_api_endpoint_registration():
         return False
 
 
+@pytest.mark.asyncio
 async def test_configuration():
     """Test that configuration is properly set."""
     logger.info("=" * 80)
@@ -161,6 +167,7 @@ async def test_configuration():
         return False
 
 
+@pytest.mark.asyncio
 async def test_dependencies():
     """Test that all required dependencies are available."""
     logger.info("=" * 80)
@@ -192,6 +199,7 @@ async def test_dependencies():
     return all_ok
 
 
+@pytest.mark.asyncio
 async def test_service_methods():
     """Test that QueryService has all required methods."""
     logger.info("=" * 80)
@@ -230,6 +238,7 @@ async def test_service_methods():
         return False
 
 
+@pytest.mark.asyncio
 async def test_rrf_fusion_integration():
     """Test that RRF fusion is properly integrated."""
     logger.info("=" * 80)
@@ -270,6 +279,7 @@ async def test_rrf_fusion_integration():
         return False
 
 
+@pytest.mark.asyncio
 async def test_error_handling():
     """Test error handling in hybrid search."""
     logger.info("=" * 80)

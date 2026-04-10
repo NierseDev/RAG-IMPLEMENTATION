@@ -155,10 +155,12 @@ class CleanupService:
                 .execute()
             
             # Count processing documents (stuck for > 1 hour)
+            from datetime import datetime, timedelta
+            cutoff_time = (datetime.utcnow() - timedelta(hours=1)).isoformat()
             stuck_result = self.client.table('documents_registry') \
                 .select('id', count='exact') \
                 .eq('status', 'processing') \
-                .lt('created_at', 'now() - interval \'1 hour\'') \
+                .lt('created_at', cutoff_time) \
                 .execute()
             
             return {

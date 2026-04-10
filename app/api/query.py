@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/query", tags=["Query"])
 
 
-@router.post("", response_model=AgentResponse)
+@router.post("/agentic", response_model=AgentResponse)
 async def agentic_query(request: QueryRequest):
     """
     Execute agentic RAG query with full reasoning loop.

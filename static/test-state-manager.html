@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>State Manager Hierarchy Tests</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+        }
+        
+        h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        
+        .test-controls {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        
+        button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+            margin-right: 10px;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .console {
+            background: #0f172a;
+            border: 2px solid #334155;
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 500px;
+            max-height: 800px;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        
+        .console-line {
+            padding: 2px 0;
+            color: #e2e8f0;
+        }
+        
+        .console-line.success {
+            color: #22c55e;
+        }
+        
+        .console-line.error {
+            color: #ef4444;
+        }
+        
+        .console-line.info {
+            color: #a78bfa;
+        }
+        
+        .console-line.test {
+            color: #3b82f6;
+        }
+        
+        .console-line.summary {
+            color: #fbbf24;
+            font-weight: bold;
+            border-top: 1px solid #334155;
+            margin-top: 10px;
+            padding-top: 10px;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .stat-card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+            border-left: 4px solid #667eea;
+        }
+        
+        .stat-card h3 {
+            color: #94a3b8;
+            font-size: 11px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #a78bfa;
+        }
+        
+        .stat-card.pass {
+            border-left-color: #22c55e;
+        }
+        
+        .stat-card.pass .stat-value {
+            color: #22c55e;
+        }
+        
+        .stat-card.fail {
+            border-left-color: #ef4444;
+        }
+        
+        .stat-card.fail .stat-value {
+            color: #ef4444;
+        }
+        
+        @media (max-width: 768px) {
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🧪 State Manager Hierarchy Tests</h1>
+            <p>Testing sub-agent tracking and state management actions</p>
+        </header>
+
+        <div class="test-controls">
+            <button onclick="runTests()" id="run-btn">▶️ Run All Tests</button>
+            <button onclick="clearConsole()">🗑️ Clear Console</button>
+        </div>
+
+        <div class="console" id="console"></div>
+
+        <div class="stats" id="stats" style="display: none;">
+            <div class="stat-card pass">
+                <h3>Passed</h3>
+                <div class="stat-value" id="stat-passed">0</div>
+            </div>
+            <div class="stat-card fail">
+                <h3>Failed</h3>
+                <div class="stat-value" id="stat-failed">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Total</h3>
+                <div class="stat-value" id="stat-total">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Success Rate</h3>
+                <div class="stat-value" id="stat-percent">0%</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/state-manager.js"></script>
+    <script src="js/test-hierarchy-state.js"></script>
+
+    <script>
+        const consoleEl = document.getElementById('console');
+        const statsEl = document.getElementById('stats');
+        let testSuite = null;
+
+        function addConsoleLine(message, type = 'info') {
+            const line = document.createElement('div');
+            line.className = `console-line ${type}`;
+            line.textContent = message;
+            consoleEl.appendChild(line);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        function clearConsole() {
+            consoleEl.innerHTML = '';
+            statsEl.style.display = 'none';
+        }
+
+        async function runTests() {
+            clearConsole();
+            const runBtn = document.getElementById('run-btn');
+            runBtn.disabled = true;
+            runBtn.textContent = '⏳ Running...';
+
+            try {
+                // Redirect console to our UI
+                const originalLog = console.log;
+                const originalError = console.error;
+                
+                console.log = function(...args) {
+                    const message = args.map(arg => 
+                        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+                    ).join(' ');
+                    
+                    // Determine type based on message content
+                    let type = 'info';
+                    if (message.includes('✓')) type = 'success';
+                    if (message.includes('✗')) type = 'error';
+                    if (message.includes('TEST')) type = 'test';
+                    if (message.includes('=====')) type = 'summary';
+                    
+                    addConsoleLine(message, type);
+                    originalLog(...args);
+                };
+                
+                console.error = function(...args) {
+                    const message = args.map(arg => 
+                        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+                    ).join(' ');
+                    addConsoleLine(message, 'error');
+                    originalError(...args);
+                };
+
+                // Run tests
+                testSuite = new HierarchyStateTests();
+                await testSuite.runAllTests();
+
+                // Restore console
+                console.log = originalLog;
+                console.error = originalError;
+
+                // Display stats
+                displayStats(testSuite.testResults);
+
+            } catch (error) {
+                console.error('Test suite error:', error);
+                addConsoleLine(`FATAL ERROR: ${error.message}`, 'error');
+            } finally {
+                runBtn.disabled = false;
+                runBtn.textContent = '▶️ Run All Tests';
+            }
+        }
+
+        function displayStats(results) {
+            const passed = results.filter(r => r.passed).length;
+            const failed = results.filter(r => !r.passed).length;
+            const total = results.length;
+            const percent = total > 0 ? ((passed / total) * 100).toFixed(1) : 0;
+
+            document.getElementById('stat-passed').textContent = passed;
+            document.getElementById('stat-failed').textContent = failed;
+            document.getElementById('stat-total').textContent = total;
+            document.getElementById('stat-percent').textContent = `${percent}%`;
+
+            statsEl.style.display = 'grid';
+        }
+
+        // Initialize
+        addConsoleLine('Test runner loaded. Click "Run All Tests" to start.', 'info');
+    </script>
+</body>
+</html>

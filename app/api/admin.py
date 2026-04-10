@@ -121,7 +121,7 @@ async def get_agent_status():
                 "max_iterations": settings.max_agent_iterations,
                 "min_confidence": settings.min_confidence_threshold,
                 "chunk_size": settings.max_chunk_tokens,
-                "top_k": settings.top_k,
+                "top_k": settings.top_k_results,
                 "verification_enabled": settings.enable_verification
             }
         }

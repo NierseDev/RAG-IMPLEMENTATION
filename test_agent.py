@@ -3,8 +3,10 @@ Quick test script for the Agentic RAG system.
 """
 import asyncio
 import sys
+import pytest
 from app.services.agent import create_agent
 
+@pytest.mark.asyncio
 async def test_agent():
     print("🤖 Testing Agentic RAG System")
     print("=" * 60)

@@ -280,6 +280,11 @@
                     <p style="color: #64748b;">Reasoning steps will appear here...</p>
                 </div>
             </div>
+
+            <!-- Hierarchical Agent Display -->
+            <div id="agent-hierarchy-container" class="card response-area"></div>
+            <div id="reasoning-timeline-container" class="card response-area"></div>
+            <div id="metrics-panel-container" class="card response-area"></div>
         </div>
         
         <!-- Ingest Tab -->
@@ -652,9 +657,25 @@
     <!-- State Management System -->
     <script src="js/state-manager.js"></script>
     
-    <!-- Initialize State Manager -->
+    <!-- UI Components for Hierarchical Display -->
+    <script src="js/ui-components.js"></script>
+
+    <!-- Insert Hierarchy Styles -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
+            // Add hierarchy styles to document
+            if (document.getElementById('hierarchy-styles') === null) {
+                const styleContent = HierarchyStyles || '';
+                const temp = document.createElement('div');
+                temp.innerHTML = styleContent;
+                document.head.appendChild(temp.firstElementChild);
+            }
+        });
+    </script>
+    
+    <!-- Initialize State Manager and UI Components -->
+    <script>
+        document.addEventListener('DOMContentLoaded', async function() {
             // Initialize the global state manager
             const stateManager = initStateManager({
                 persistenceEnabled: true,
@@ -662,13 +683,31 @@
                 statusUpdateInterval: 5000
             });
             
-            // Log initialization
             console.log('✓ State Manager Initialized');
             
+            // Initialize UI Components
+            window.agentHierarchyPanel = new AgentHierarchyPanel('agent-hierarchy-container');
+            window.reasoningTimeline = new ReasoningTimeline('reasoning-timeline-container');
+            window.metricsPanel = new MetricsPanel('metrics-panel-container');
+            
+            console.log('✓ UI Components Initialized');
+            
             // Load initial data
-            stateManager.dispatch('loadSessions');
-            stateManager.dispatch('loadDocuments');
-            stateManager.dispatch('refreshSystemStatus');
+            await stateManager.dispatch('loadSessions');
+            
+            // Ensure a current session exists for chat operations
+            let currentSession = stateManager.getState('chat.currentSession');
+            if (!currentSession) {
+                try {
+                    currentSession = await stateManager.dispatch('createSession', 'New Chat');
+                    console.log('✓ New chat session created:', currentSession);
+                } catch (error) {
+                    console.warn('Could not create session automatically:', error);
+                }
+            }
+            
+            await stateManager.dispatch('loadDocuments');
+            await stateManager.dispatch('refreshSystemStatus');
         });
     </script>
 </body>

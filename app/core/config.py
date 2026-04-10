@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     hybrid_vector_weight: float = Field(default=0.7, description="Weight for vector search in hybrid mode")
     hybrid_keyword_weight: float = Field(default=0.3, description="Weight for keyword search in hybrid mode")
     
+    # Sprint 5: Reranking Configuration
+    use_reranking: bool = Field(default=False, description="Enable optional reranking of results")
+    rerank_strategy: Literal["semantic", "bm25", "hybrid", "diversity"] = Field(
+        default="hybrid",
+        description="Reranking strategy: semantic, bm25, hybrid, or diversity"
+    )
+    rerank_top_k: int = Field(default=10, description="Number of results to return after reranking")
+    
     # Agent Configuration
     max_agent_iterations: int = Field(default=3, description="Maximum reasoning loop iterations")
     min_confidence_threshold: float = Field(default=0.7, description="Minimum confidence to provide answer")

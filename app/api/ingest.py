@@ -6,6 +6,8 @@ from typing import Optional, List
 import tempfile
 import os
 import time
+import hashlib
+from datetime import datetime
 from app.models.responses import IngestResponse, DocumentListResponse, BatchIngestResponse
 from app.services.document_processor import document_processor
 from app.core.database import db
@@ -14,6 +16,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingest", tags=["Ingestion"])
+
+
+def compute_bytes_hash(data: bytes) -> str:
+    """Compute SHA256 hash of bytes."""
+    return hashlib.sha256(data).hexdigest()
 
 
 @router.post("", response_model=IngestResponse)
@@ -71,6 +78,23 @@ async def ingest_document(
             # Store chunks in database
             inserted = await db.insert_chunks_batch(chunks)
             
+            # Create document registry entry (Sprint 5: ensure registry is populated)
+            try:
+                registry_entry = {
+                    "filename": file.filename,
+                    "source": source,
+                    "file_hash": file_hash,
+                    "file_size": file_size,
+                    "status": "processed",
+                    "chunk_count": inserted,
+                    "upload_date": datetime.utcnow().isoformat(),
+                    "metadata": metadata
+                }
+                client = db.client
+                client.table('documents_registry').insert(registry_entry).execute()
+            except Exception as e:
+                logger.warning(f"Could not save to documents_registry: {e}. Chunks were still inserted.")
+            
             processing_time = time.time() - start_time
             
             # Sprint 3: Enhanced response with validation and metadata
@@ -97,6 +121,18 @@ async def ingest_document(
     except Exception as e:
         logger.error(f"Error ingesting document: {e}")
         raise HTTPException(status_code=500, detail=f"Ingestion error: {str(e)}")
+
+
+@router.post("/upload", response_model=IngestResponse)
+async def ingest_document_upload(
+    file: UploadFile = File(...),
+    source: Optional[str] = Form(None)
+):
+    """
+    Alias endpoint for uploading a document.
+    Delegates to the main ingest_document endpoint.
+    """
+    return await ingest_document(file=file, source=source)
 
 
 @router.post("/check-duplicates")
@@ -233,6 +269,24 @@ async def ingest_documents_batch(
                 # Store chunks in database
                 inserted = await db.insert_chunks_batch(chunks)
                 total_chunks += inserted
+                
+                # Create document registry entry (Sprint 5: ensure registry is populated)
+                try:
+                    registry_entry = {
+                        "filename": file.filename,
+                        "source": source,
+                        "file_hash": compute_bytes_hash(content),
+                        "file_size": file_size,
+                        "status": "processed",
+                        "chunk_count": inserted,
+                        "upload_date": datetime.utcnow().isoformat(),
+                        "metadata": metadata
+                    }
+                    client = db.client
+                    client.table('documents_registry').insert(registry_entry).execute()
+                except Exception as e:
+                    logger.warning(f"Could not save {source} to documents_registry: {e}. Chunks were still inserted.")
+                
                 successful += 1
                 
                 file_time = time.time() - file_start
@@ -297,17 +351,25 @@ async def ingest_documents_batch(
 
 @router.get("/documents", response_model=DocumentListResponse)
 async def list_documents():
-    """List all documents in the knowledge base."""
+    """List all documents in the knowledge base with their metadata."""
     try:
-        sources = await db.list_sources()
+        client = db.client
         
-        # Get stats per source
+        # Query documents_registry for all documents (Sprint 5: Query registry instead of chunks)
+        result = client.table('documents_registry').select('*').execute()
+        
         documents = []
-        for source in sources:
-            documents.append({
-                "source": source,
-                "type": "document"
-            })
+        if result.data:
+            for doc_record in result.data:
+                documents.append({
+                    "id": doc_record.get('id'),
+                    "filename": doc_record.get('filename'),
+                    "source": doc_record.get('source'),
+                    "chunk_count": doc_record.get('chunk_count', 0),
+                    "file_size": doc_record.get('file_size', 0),
+                    "status": doc_record.get('status', 'unknown'),
+                    "upload_date": doc_record.get('upload_date')
+                })
         
         return DocumentListResponse(
             documents=documents,

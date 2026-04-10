@@ -31,6 +31,8 @@ class RetrievalResult(BaseModel):
     text: str
     similarity: float
     created_at: datetime
+    rerank_score: Optional[float] = None
+    diversity_score: Optional[float] = None
     
     class Config:
         from_attributes = True

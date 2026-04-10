@@ -67,10 +67,39 @@ class DocumentProcessor:
         Returns: (chunks, metadata)
         
         Sprint 3: Enhanced with semantic chunking and metadata extraction
+        Sprint 5: Add memory-safe PDF processing and embedding failure handling
         """
         try:
-            # Convert document using Docling
-            result = self.converter.convert(file_path)
+            # Sprint 5: Memory-safe PDF processing - limit pages to prevent std::bad_alloc
+            result = None
+            if file_path.lower().endswith('.pdf'):
+                try:
+                    result = self.converter.convert(file_path)
+                    doc = result.document
+                    page_count = getattr(doc, 'page_count', 0)
+                    
+                    # Limit PDF processing to max 100 pages to prevent memory errors
+                    max_pages = 100
+                    if page_count > max_pages:
+                        logger.warning(f"PDF has {page_count} pages, limiting to {max_pages} for memory safety")
+                        # Note: Docling doesn't support page limiting directly,
+                        # but we'll truncate the content
+                        text_content = doc.export_to_markdown()
+                        # Rough page split (approx 2000 chars per page)
+                        chars_per_page = 2000
+                        max_chars = max_pages * chars_per_page
+                        if len(text_content) > max_chars:
+                            text_content = text_content[:max_chars]
+                            logger.info(f"Truncated content to {len(text_content)} characters for memory safety")
+                except MemoryError:
+                    logger.error(f"Memory error processing PDF: {source}. File too large.")
+                    raise
+            else:
+                result = self.converter.convert(file_path)
+            
+            if not result:
+                raise ValueError("Document conversion failed")
+            
             doc = result.document
             
             # Extract text content
@@ -107,14 +136,16 @@ class DocumentProcessor:
                     chunk = truncate_to_token_limit(chunk, settings.embedding_context_window - 10)
                 validated_chunks.append(chunk)
             
-            # Generate embeddings
-            embeddings = await embedding_service.embed_batch(validated_chunks)
+            # Generate embeddings with retry logic (Sprint 5: Improved failure handling)
+            embeddings = await self._embed_batch_with_fallback(validated_chunks)
             
             # Create RAGChunk objects
             chunks = []
+            skipped_chunks = 0
             for idx, (chunk_text, embedding) in enumerate(zip(validated_chunks, embeddings)):
                 if not embedding:  # Skip if embedding failed
                     logger.warning(f"Skipping chunk {idx} due to embedding failure")
+                    skipped_chunks += 1
                     continue
                 
                 chunk_id = self._generate_chunk_id(source, idx, chunk_text)
@@ -355,6 +386,46 @@ class DocumentProcessor:
                 pass
         
         return f"{stem}_v{counter}{suffix}"
+    
+    async def _embed_batch_with_fallback(self, chunks: List[str]) -> List:
+        """
+        Embed a batch of chunks with retry logic and fallback handling.
+        Sprint 5: Improve embedding failure handling with retries.
+        
+        Args:
+            chunks: List of text chunks to embed
+            
+        Returns:
+            List of embeddings (None for failed chunks)
+        """
+        try:
+            # Try primary embedding service
+            embeddings = await embedding_service.embed_batch(chunks)
+            
+            # Check for failed embeddings and retry individually
+            failed_indices = [i for i, e in enumerate(embeddings) if not e]
+            if failed_indices:
+                logger.warning(f"Failed to embed {len(failed_indices)} chunks, attempting individual retry")
+                for idx in failed_indices:
+                    try:
+                        # Retry individual chunk with delay
+                        import asyncio
+                        await asyncio.sleep(0.5)  # Brief delay between retries
+                        single_embedding = await embedding_service.embed_batch([chunks[idx]])
+                        if single_embedding and single_embedding[0]:
+                            embeddings[idx] = single_embedding[0]
+                            logger.info(f"Successfully embedded chunk {idx} on retry")
+                        else:
+                            logger.warning(f"Chunk {idx} retry failed, will be skipped")
+                    except Exception as e:
+                        logger.warning(f"Retry failed for chunk {idx}: {e}")
+            
+            return embeddings
+            
+        except Exception as e:
+            logger.error(f"Batch embedding failed: {e}")
+            # Return list of None values to indicate all failed
+            return [None] * len(chunks)
 
 
 # Global document processor instance

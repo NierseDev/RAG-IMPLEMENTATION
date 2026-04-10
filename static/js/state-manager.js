@@ -29,7 +29,24 @@ class StateManager {
                 },
                 debugOpen: false,
                 traceData: [],
-                agentStatus: null
+                agentStatus: null,
+                agentHierarchy: {
+                    mainAgent: {
+                        type: 'main',
+                        status: 'idle',
+                        reasoning: [],
+                        metrics: {
+                            startTime: null,
+                            endTime: null,
+                            duration: 0,
+                            retrievedDocuments: 0,
+                            iterations: 0,
+                            confidence: null
+                        }
+                    },
+                    subAgents: [],
+                    expandedAgents: {}
+                }
             },
             ui: {
                 activeTab: 'chat',
@@ -42,12 +59,14 @@ class StateManager {
             persistenceEnabled: true,
             persistenceKey: 'rag-app-state',
             statusUpdateInterval: 5000,
+            minPollingInterval: 10000,  // Minimum 10 seconds to prevent excessive polling
             ...config
         };
 
         this.subscribers = new Map();
         this.middleware = [];
         this.statusUpdateTimer = null;
+        this.lastStatusUpdateTime = 0;  // Track last update time for throttling
 
         this.init();
     }
@@ -285,7 +304,24 @@ class StateManager {
                 },
                 debugOpen: false,
                 traceData: [],
-                agentStatus: null
+                agentStatus: null,
+                agentHierarchy: {
+                    mainAgent: {
+                        type: 'main',
+                        status: 'idle',
+                        reasoning: [],
+                        metrics: {
+                            startTime: null,
+                            endTime: null,
+                            duration: 0,
+                            retrievedDocuments: 0,
+                            iterations: 0,
+                            confidence: null
+                        }
+                    },
+                    subAgents: [],
+                    expandedAgents: {}
+                }
             },
             ui: {
                 activeTab: 'chat',
@@ -299,12 +335,14 @@ class StateManager {
     }
 
     /**
-     * Start periodic status updates
+     * Start periodic status updates with throttling
      */
     startStatusUpdates() {
+        // Use max of configured interval and minimum to prevent excessive polling
+        const interval = Math.max(this.config.statusUpdateInterval, this.config.minPollingInterval);
         this.statusUpdateTimer = setInterval(async () => {
             await this.dispatch('refreshSystemStatus');
-        }, this.config.statusUpdateInterval);
+        }, interval);
     }
 
     /**
@@ -466,6 +504,14 @@ class StateManager {
 
         refreshSystemStatus: async function() {
             try {
+                // Throttle: only refresh if minimum interval has passed
+                const now = Date.now();
+                const minInterval = (this.config && this.config.minPollingInterval) || 10000;
+                if (now - this.lastStatusUpdateTime < minInterval) {
+                    return;  // Skip this update to reduce database load
+                }
+                this.lastStatusUpdateTime = now;
+                
                 const [agentRes, dbRes] = await Promise.all([
                     fetch('/agent/status'),
                     fetch('/database/status')
@@ -494,6 +540,160 @@ class StateManager {
 
         setTraceData: async function(traceData) {
             this.setState('debug.traceData', traceData);
+        },
+
+        // ========== SUB-AGENT HIERARCHY ACTIONS ==========
+
+        /**
+         * Record when a sub-agent is spawned
+         * @param {Object} payload - { agentType, context, reasoning }
+         */
+        recordSubAgentSpawn: async function(payload) {
+            const { agentType, context = '', reasoning = [] } = payload;
+            const hierarchy = this.getState('debug.agentHierarchy') || {};
+            
+            const newSubAgent = {
+                id: Math.random().toString(36).substring(7),
+                type: agentType,
+                status: 'running',
+                spawned_at: new Date().toISOString(),
+                context: context,
+                reasoning: reasoning,
+                metrics: {
+                    startTime: Date.now(),
+                    endTime: null,
+                    duration: 0,
+                    retrievedDocuments: 0,
+                    confidence: null
+                }
+            };
+
+            const subAgents = hierarchy.subAgents || [];
+            subAgents.push(newSubAgent);
+
+            this.setState('debug.agentHierarchy', {
+                ...hierarchy,
+                subAgents: subAgents
+            });
+
+            return newSubAgent.id;
+        },
+
+        /**
+         * Record sub-agent completion and results
+         * @param {Object} payload - { subAgentId, result, reasoning, metrics }
+         */
+        recordSubAgentResult: async function(payload) {
+            const { subAgentId, result = '', reasoning = [], metrics = {} } = payload;
+            const hierarchy = this.getState('debug.agentHierarchy') || {};
+            const subAgents = hierarchy.subAgents || [];
+
+            const subAgentIndex = subAgents.findIndex(a => a.id === subAgentId);
+            if (subAgentIndex !== -1) {
+                subAgents[subAgentIndex] = {
+                    ...subAgents[subAgentIndex],
+                    status: 'completed',
+                    result: result,
+                    reasoning: reasoning,
+                    metrics: {
+                        ...subAgents[subAgentIndex].metrics,
+                        endTime: Date.now(),
+                        duration: (Date.now() - subAgents[subAgentIndex].metrics.startTime) / 1000,
+                        ...metrics
+                    }
+                };
+            }
+
+            this.setState('debug.agentHierarchy', {
+                ...hierarchy,
+                subAgents: subAgents
+            });
+        },
+
+        /**
+         * Update main agent metrics
+         * @param {Object} payload - { metrics }
+         */
+        updateMainAgentMetrics: async function(payload) {
+            const { metrics } = payload;
+            const hierarchy = this.getState('debug.agentHierarchy') || {};
+            
+            this.setState('debug.agentHierarchy', {
+                ...hierarchy,
+                mainAgent: {
+                    ...hierarchy.mainAgent,
+                    metrics: {
+                        ...hierarchy.mainAgent.metrics,
+                        ...metrics
+                    }
+                }
+            });
+        },
+
+        /**
+         * Update main agent reasoning trace
+         * @param {Object} payload - { reasoning }
+         */
+        updateMainAgentReasoning: async function(payload) {
+            const { reasoning } = payload;
+            const hierarchy = this.getState('debug.agentHierarchy') || {};
+
+            this.setState('debug.agentHierarchy', {
+                ...hierarchy,
+                mainAgent: {
+                    ...hierarchy.mainAgent,
+                    reasoning: reasoning
+                }
+            });
+        },
+
+        /**
+         * Update the full agent hierarchy (tree structure)
+         * @param {Object} payload - { hierarchy }
+         */
+        updateAgentHierarchy: async function(payload) {
+            const { hierarchy } = payload;
+            this.setState('debug.agentHierarchy', hierarchy);
+        },
+
+        /**
+         * Toggle expand/collapse for an agent
+         * @param {Object} payload - { agentId }
+         */
+        toggleAgentExpanded: async function(payload) {
+            const { agentId } = payload;
+            const hierarchy = this.getState('debug.agentHierarchy') || {};
+            const expanded = hierarchy.expandedAgents || {};
+
+            expanded[agentId] = !expanded[agentId];
+
+            this.setState('debug.agentHierarchy', {
+                ...hierarchy,
+                expandedAgents: expanded
+            });
+        },
+
+        /**
+         * Clear all sub-agents (reset hierarchy)
+         */
+        clearAgentHierarchy: async function() {
+            this.setState('debug.agentHierarchy', {
+                mainAgent: {
+                    type: 'main',
+                    status: 'idle',
+                    reasoning: [],
+                    metrics: {
+                        startTime: null,
+                        endTime: null,
+                        duration: 0,
+                        retrievedDocuments: 0,
+                        iterations: 0,
+                        confidence: null
+                    }
+                },
+                subAgents: [],
+                expandedAgents: {}
+            });
         },
 
         // ========== UI ACTIONS ==========

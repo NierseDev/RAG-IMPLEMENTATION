@@ -1,11 +1,12 @@
 """
 Query Service for hybrid search integration (Sprint 4).
 Combines vector and keyword search with RRF fusion and metadata filtering.
+Optionally integrates with reranker service for advanced result ranking (Sprint 5).
 """
 import asyncio
 import logging
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 
 from app.core.database import db
@@ -14,12 +15,13 @@ from app.models.entities import RetrievalResult
 from app.services.embedding import embedding_service
 from app.services.keyword_search import keyword_search_service
 from app.services.rrf_fusion import hybrid_fusion
+from app.services.reranker import reranker_service
 
 logger = logging.getLogger(__name__)
 
 
 class QueryService:
-    """Service for executing hybrid search queries with metadata filtering."""
+    """Service for executing hybrid search queries with metadata filtering and optional reranking."""
     
     def __init__(self):
         """Initialize query service with configuration."""
@@ -30,9 +32,14 @@ class QueryService:
         self.keyword_top_k = 20
         self.final_top_k = 10
         
+        # Reranking configuration
+        self.reranking_enabled = settings.use_reranking
+        self.rerank_strategy = settings.rerank_strategy
+        
         logger.info(
             f"QueryService initialized: hybrid={self.hybrid_enabled}, "
-            f"vector_weight={self.vector_weight}, keyword_weight={self.keyword_weight}"
+            f"vector_weight={self.vector_weight}, keyword_weight={self.keyword_weight}, "
+            f"reranking={self.reranking_enabled} ({self.rerank_strategy})"
         )
     
     async def search(
@@ -41,10 +48,12 @@ class QueryService:
         metadata_filters: Optional[Dict[str, Any]] = None,
         top_k: Optional[int] = None,
         use_hybrid: Optional[bool] = None,
-        min_similarity: Optional[float] = None
+        min_similarity: Optional[float] = None,
+        use_reranking: Optional[bool] = None,
+        rerank_strategy: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Execute hybrid search query with metadata filtering.
+        Execute hybrid search query with metadata filtering and optional reranking.
         
         Args:
             query: User question
@@ -52,6 +61,8 @@ class QueryService:
             top_k: Number of final results (default: 10)
             use_hybrid: Override hybrid search enabled (default: config)
             min_similarity: Minimum similarity threshold
+            use_reranking: Override reranking enabled (default: config)
+            rerank_strategy: Override reranking strategy (default: config)
             
         Returns:
             Dictionary with results and search breakdown
@@ -63,6 +74,8 @@ class QueryService:
             top_k = top_k or self.final_top_k
             use_hybrid = use_hybrid if use_hybrid is not None else self.hybrid_enabled
             min_similarity = min_similarity or settings.min_similarity
+            use_reranking = use_reranking if use_reranking is not None else self.reranking_enabled
+            rerank_strategy = rerank_strategy or self.rerank_strategy
             
             # Initialize tracking
             search_breakdown = {
@@ -72,7 +85,8 @@ class QueryService:
                 'keyword_score': 0.0,
                 'fused_results': 0,
                 'after_filter': 0,
-                'method': 'vector-only'
+                'method': 'vector-only',
+                'reranked': False
             }
             retrieval_method = 'vector-only'
             filters_applied = bool(metadata_filters)
@@ -96,17 +110,25 @@ class QueryService:
                 )
                 search_breakdown.update(breakdown)
             
-            # Final reranking by score
-            results = sorted(results, key=lambda x: x.similarity, reverse=True)[:top_k]
+            # Optional reranking
+            if use_reranking and reranker_service.enabled:
+                results = reranker_service.rerank(results, query, strategy=rerank_strategy)
+                search_breakdown['reranked'] = True
+                search_breakdown['rerank_strategy'] = rerank_strategy
+                logger.debug(f"Results reranked using {rerank_strategy} strategy")
+            else:
+                # Final reranking by score (default)
+                results = sorted(results, key=lambda x: x.similarity, reverse=True)[:top_k]
             
             processing_time = time.time() - start_time
             
             # Log performance metrics
+            rerank_info = f", reranked={rerank_strategy}" if use_reranking and reranker_service.enabled else ""
             logger.info(
                 f"Query processed in {processing_time:.2f}s | "
                 f"Method: {retrieval_method} | "
                 f"Results: {len(results)}/{top_k} | "
-                f"Filters: {filters_applied}"
+                f"Filters: {filters_applied}{rerank_info}"
             )
             
             return {
@@ -123,7 +145,7 @@ class QueryService:
             logger.error(f"Query service error: {e}", exc_info=True)
             return {
                 'results': [],
-                'search_breakdown': {},
+                'search_breakdown': {'method': 'error'},
                 'retrieval_method': 'error',
                 'filter_applied': False,
                 'processing_time': time.time() - start_time,
@@ -334,6 +356,11 @@ class QueryService:
         
         formatted_results = []
         for result in results:
+            # Include rerank score if present
+            score_value = result.similarity
+            if hasattr(result, 'rerank_score'):
+                score_value = result.rerank_score
+            
             formatted_results.append({
                 'chunk_id': result.chunk_id,
                 'source': result.source,
@@ -356,6 +383,49 @@ class QueryService:
             response['search_breakdown'] = search_response.get('search_breakdown', {})
         
         return response
+    
+    async def rerank_results(
+        self,
+        results: List[RetrievalResult],
+        query: str,
+        strategy: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Re-rank existing search results using specified strategy.
+        Useful for refining results or trying different ranking approaches.
+        
+        Args:
+            results: Results to rerank
+            query: Original query
+            strategy: Reranking strategy (semantic, bm25, hybrid, diversity)
+            
+        Returns:
+            Dictionary with reranked results and metrics
+        """
+        start_time = time.time()
+        strategy = strategy or self.rerank_strategy
+        
+        try:
+            reranked = reranker_service.rerank(results, query, strategy=strategy)
+            elapsed = time.time() - start_time
+            
+            logger.info(f"Reranked {len(results)} results using {strategy} in {elapsed:.3f}s")
+            
+            return {
+                'results': reranked,
+                'strategy': strategy,
+                'original_count': len(results),
+                'reranked_count': len(reranked),
+                'processing_time': elapsed
+            }
+        
+        except Exception as e:
+            logger.error(f"Reranking failed: {e}", exc_info=True)
+            return {
+                'results': results,
+                'error': str(e),
+                'processing_time': time.time() - start_time
+            }
 
 
 # Global instance

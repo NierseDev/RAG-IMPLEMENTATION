@@ -52,10 +52,10 @@ def test_semantic_chunker():
             print(f"\n--- Chunk {i} ({len(chunk)} chars) ---")
             print(chunk[:200] + "..." if len(chunk) > 200 else chunk)
         
-        return True
+        assert True
     except Exception as e:
         print(f"✗ FAILED: {e}")
-        return False
+        assert False
 
 
 def test_dynamic_chunker():
@@ -77,10 +77,10 @@ def test_dynamic_chunker():
             print(f"  Type: {meta['chunk_type']}")
             print(f"  Preview: {text[:150]}...")
         
-        return True
+        assert True
     except Exception as e:
         print(f"✗ FAILED: {e}")
-        return False
+        assert False
 
 
 def test_context_optimizer():
@@ -107,10 +107,10 @@ def test_context_optimizer():
             print(f"  Optimal top_k: {optimal_k}")
         
         print("\n✓ Context optimizer working correctly")
-        return True
+        assert True
     except Exception as e:
         print(f"✗ FAILED: {e}")
-        return False
+        assert False
 
 
 def test_metadata_extractor():
@@ -138,10 +138,10 @@ def test_metadata_extractor():
             for k, v in metadata['statistics'].items():
                 print(f"    {k}: {v}")
         
-        return True
+        assert True
     except Exception as e:
         print(f"✗ FAILED: {e}")
-        return False
+        assert False
 
 
 def test_rrf_fusion():
@@ -184,12 +184,12 @@ def test_rrf_fusion():
         hybrid = hybrid_fusion.combine(vector_results, keyword_results)
         print(f"\n✓ Hybrid fusion: {len(hybrid)} results")
         
-        return True
+        assert True
     except Exception as e:
         print(f"✗ FAILED: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        assert False
 
 
 def test_config_integration():
@@ -215,10 +215,10 @@ def test_config_integration():
         for key, value in sprint3_settings.items():
             print(f"  {key}: {value}")
         
-        return True
+        assert True
     except Exception as e:
         print(f"✗ FAILED: {e}")
-        return False
+        assert False
 
 
 def test_response_models():
@@ -277,12 +277,12 @@ def test_response_models():
         )
         print("✓ Enhanced IngestResponse model valid")
         
-        return True
+        assert True
     except Exception as e:
         print(f"✗ FAILED: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        assert False
 
 
 def main():
@@ -306,8 +306,11 @@ def main():
     results = []
     for name, test_func in tests:
         try:
-            passed = test_func()
-            results.append((name, passed))
+            test_func()
+            results.append((name, True))
+        except AssertionError:
+            print(f"\n✗ {name} failed")
+            results.append((name, False))
         except Exception as e:
             print(f"\n✗ {name} crashed: {e}")
             import traceback
