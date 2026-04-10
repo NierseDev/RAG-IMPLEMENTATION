@@ -23,6 +23,13 @@ def compute_bytes_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def get_source_type(filename: str) -> str:
+    """Extract source type from filename extension."""
+    ext = os.path.splitext(filename)[1].lower().lstrip('.')
+    valid_types = ('pdf', 'docx', 'pptx', 'html', 'markdown', 'txt', 'md')
+    return ext if ext in valid_types else 'other'
+
+
 @router.post("", response_model=IngestResponse)
 async def ingest_document(
     file: UploadFile = File(...),
@@ -85,15 +92,40 @@ async def ingest_document(
                     "source": source,
                     "file_hash": file_hash,
                     "file_size": file_size,
-                    "status": "processed",
-                    "chunk_count": inserted,
-                    "upload_date": datetime.utcnow().isoformat(),
-                    "metadata": metadata
+                    "source_type": get_source_type(file.filename),
+                    "status": "completed",
+                    "chunk_count": inserted
                 }
                 client = db.client
-                client.table('documents_registry').insert(registry_entry).execute()
+                response = client.table('documents_registry').insert(registry_entry).execute()
+                
+                # If registry entry was created, insert metadata rows
+                if response.data:
+                    document_id = response.data[0].get('id')
+                    
+                    # Link chunks to document by updating their document_id
+                    try:
+                        client.table('rag_chunks') \
+                            .update({'document_id': document_id}) \
+                            .eq('source', source) \
+                            .execute()
+                    except Exception as chunk_link_error:
+                        logger.warning(f"Could not link chunks to document: {chunk_link_error}")
+                    
+                    # Insert metadata key-value pairs
+                    for key, value in metadata.items():
+                        try:
+                            meta_entry = {
+                                "document_id": document_id,
+                                "key": key,
+                                "value": str(value),
+                                "value_json": value if isinstance(value, (dict, list)) else None
+                            }
+                            client.table('document_metadata').insert(meta_entry).execute()
+                        except Exception as me:
+                            logger.warning(f"Could not save metadata key '{key}': {me}")
             except Exception as e:
-                logger.warning(f"Could not save to documents_registry: {e}. Chunks were still inserted.")
+                logger.error(f"Error saving to documents_registry: {e}. Chunks were still inserted.")
             
             processing_time = time.time() - start_time
             
@@ -277,15 +309,40 @@ async def ingest_documents_batch(
                         "source": source,
                         "file_hash": compute_bytes_hash(content),
                         "file_size": file_size,
-                        "status": "processed",
-                        "chunk_count": inserted,
-                        "upload_date": datetime.utcnow().isoformat(),
-                        "metadata": metadata
+                        "source_type": get_source_type(file.filename),
+                        "status": "completed",
+                        "chunk_count": inserted
                     }
                     client = db.client
-                    client.table('documents_registry').insert(registry_entry).execute()
+                    response = client.table('documents_registry').insert(registry_entry).execute()
+                    
+                    # If registry entry was created, insert metadata rows
+                    if response.data:
+                        document_id = response.data[0].get('id')
+                        
+                        # Link chunks to document by updating their document_id
+                        try:
+                            client.table('rag_chunks') \
+                                .update({'document_id': document_id}) \
+                                .eq('source', source) \
+                                .execute()
+                        except Exception as chunk_link_error:
+                            logger.warning(f"Could not link chunks to document for {source}: {chunk_link_error}")
+                        
+                        # Insert metadata key-value pairs
+                        for key, value in metadata.items():
+                            try:
+                                meta_entry = {
+                                    "document_id": document_id,
+                                    "key": key,
+                                    "value": str(value),
+                                    "value_json": value if isinstance(value, (dict, list)) else None
+                                }
+                                client.table('document_metadata').insert(meta_entry).execute()
+                            except Exception as me:
+                                logger.warning(f"Could not save metadata key '{key}' for {source}: {me}")
                 except Exception as e:
-                    logger.warning(f"Could not save {source} to documents_registry: {e}. Chunks were still inserted.")
+                    logger.error(f"Could not save {source} to documents_registry: {e}. Chunks were still inserted.")
                 
                 successful += 1
                 

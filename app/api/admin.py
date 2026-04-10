@@ -139,15 +139,15 @@ async def get_database_status():
         client = get_supabase_client()
         db_connected = await db.health_check()
         
-        # Get document stats
-        doc_stats = client.table('documents_registry') \
-            .select('status', count='exact') \
-            .execute()
+        # Get all documents to count by status
+        doc_result = client.table('documents_registry').select('*').execute()
         
         # Count by status
         status_counts = {}
-        if doc_stats.data:
-            for doc in doc_stats.data:
+        total_docs = 0
+        if doc_result.data:
+            total_docs = len(doc_result.data)
+            for doc in doc_result.data:
                 status = doc.get('status', 'unknown')
                 status_counts[status] = status_counts.get(status, 0) + 1
         
@@ -164,7 +164,7 @@ async def get_database_status():
                 "healthy": db_connected
             },
             "documents": {
-                "total": doc_stats.count if doc_stats.count else 0,
+                "total": total_docs,
                 "by_status": status_counts
             },
             "chunks": {

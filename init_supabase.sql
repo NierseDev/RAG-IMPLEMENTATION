@@ -28,6 +28,7 @@ CREATE TABLE rag_chunks (
     id BIGSERIAL PRIMARY KEY,
     chunk_id TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL,
+    document_id BIGINT REFERENCES documents_registry(id) ON DELETE CASCADE,
     text TEXT NOT NULL,
     ai_provider TEXT NOT NULL DEFAULT 'ollama' CHECK (ai_provider IN ('ollama', 'openai')),
     embedding_model TEXT NOT NULL DEFAULT 'mxbai-embed-large',
@@ -60,6 +61,7 @@ CREATE INDEX rag_chunks_chunk_id_idx ON rag_chunks (chunk_id);
 CREATE INDEX rag_chunks_created_at_idx ON rag_chunks (created_at DESC);
 CREATE INDEX rag_chunks_provider_idx ON rag_chunks (ai_provider);
 CREATE INDEX rag_chunks_model_idx ON rag_chunks (embedding_model);
+CREATE INDEX rag_chunks_document_id_idx ON rag_chunks (document_id);
 
 -- =============================================================================
 -- STEP 4: Create vector similarity search function
@@ -214,6 +216,7 @@ CREATE TABLE documents_registry (
     id BIGSERIAL PRIMARY KEY,
     user_id UUID DEFAULT auth.uid(),
     filename TEXT NOT NULL,
+    source TEXT UNIQUE,
     file_hash TEXT NOT NULL UNIQUE,
     file_size BIGINT NOT NULL,
     upload_date TIMESTAMPTZ DEFAULT now(),
