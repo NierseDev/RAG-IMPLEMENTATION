@@ -212,6 +212,7 @@ FROM get_chunk_stats();
 
 CREATE TABLE documents_registry (
     id BIGSERIAL PRIMARY KEY,
+    user_id UUID DEFAULT auth.uid(),
     filename TEXT NOT NULL,
     file_hash TEXT NOT NULL UNIQUE,
     file_size BIGINT NOT NULL,
@@ -229,6 +230,31 @@ CREATE INDEX documents_registry_hash_idx ON documents_registry (file_hash);
 CREATE INDEX documents_registry_filename_idx ON documents_registry (filename);
 CREATE INDEX documents_registry_upload_date_idx ON documents_registry (upload_date DESC);
 CREATE INDEX documents_registry_status_idx ON documents_registry (status);
+CREATE INDEX documents_registry_user_id_idx ON documents_registry (user_id, created_at DESC);
+
+-- Enable RLS on documents_registry
+ALTER TABLE documents_registry ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy (for DEBUG/backend access)
+CREATE POLICY "Service role full access" ON documents_registry
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- User read access
+CREATE POLICY "Users can read own documents" ON documents_registry
+  FOR SELECT USING (auth.uid() = user_id);
+
+-- User insert access (default user_id)
+CREATE POLICY "Users can insert own documents" ON documents_registry
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- User update access
+CREATE POLICY "Users can update own documents" ON documents_registry
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- User delete access
+CREATE POLICY "Users can delete own documents" ON documents_registry
+  FOR DELETE USING (auth.uid() = user_id);
 
 -- =============================================================================
 -- STEP 9: Create document_metadata table (Phase 2.5)
@@ -237,6 +263,7 @@ CREATE INDEX documents_registry_status_idx ON documents_registry (status);
 CREATE TABLE document_metadata (
     id BIGSERIAL PRIMARY KEY,
     document_id BIGINT NOT NULL REFERENCES documents_registry(id) ON DELETE CASCADE,
+    user_id UUID DEFAULT auth.uid(),
     key TEXT NOT NULL,
     value TEXT NOT NULL,
     value_json JSONB,
@@ -248,6 +275,31 @@ CREATE TABLE document_metadata (
 CREATE INDEX document_metadata_doc_id_idx ON document_metadata (document_id);
 CREATE INDEX document_metadata_key_idx ON document_metadata (key);
 CREATE INDEX document_metadata_json_idx ON document_metadata USING gin (value_json);
+CREATE INDEX document_metadata_user_id_idx ON document_metadata (user_id, created_at DESC);
+
+-- Enable RLS on document_metadata
+ALTER TABLE document_metadata ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy
+CREATE POLICY "Service role full access" ON document_metadata
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- User read access (only for their own documents)
+CREATE POLICY "Users can read own document metadata" ON document_metadata
+  FOR SELECT USING (auth.uid() = user_id);
+
+-- User insert access (default user_id)
+CREATE POLICY "Users can insert own document metadata" ON document_metadata
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- User update access
+CREATE POLICY "Users can update own document metadata" ON document_metadata
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- User delete access
+CREATE POLICY "Users can delete own document metadata" ON document_metadata
+  FOR DELETE USING (auth.uid() = user_id);
 
 -- =============================================================================
 -- STEP 10: Add full-text search to rag_chunks (Phase 2.5)
@@ -327,6 +379,7 @@ $$;
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id BIGSERIAL PRIMARY KEY,
+    user_id UUID DEFAULT auth.uid(),
     title TEXT NOT NULL DEFAULT 'New Chat',
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -335,6 +388,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 CREATE TABLE IF NOT EXISTS chat_messages (
     id BIGSERIAL PRIMARY KEY,
     session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    user_id UUID DEFAULT auth.uid(),
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
     content TEXT NOT NULL,
     metadata JSONB,
@@ -344,12 +398,74 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 -- Indexes for chat tables
 CREATE INDEX chat_messages_session_id_idx ON chat_messages (session_id);
 CREATE INDEX chat_sessions_updated_at_idx ON chat_sessions (updated_at DESC);
+CREATE INDEX chat_sessions_user_id_idx ON chat_sessions (user_id, created_at DESC);
+CREATE INDEX chat_messages_user_id_idx ON chat_messages (user_id, created_at DESC);
+
+-- Enable RLS on chat_sessions
+ALTER TABLE chat_sessions ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy
+CREATE POLICY "Service role full access" ON chat_sessions
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- User read access
+CREATE POLICY "Users can read own sessions" ON chat_sessions
+  FOR SELECT USING (auth.uid() = user_id);
+
+-- User insert access (default user_id)
+CREATE POLICY "Users can create own sessions" ON chat_sessions
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- User update access
+CREATE POLICY "Users can update own sessions" ON chat_sessions
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- User delete access
+CREATE POLICY "Users can delete own sessions" ON chat_sessions
+  FOR DELETE USING (auth.uid() = user_id);
+
+-- Enable RLS on chat_messages
+ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy
+CREATE POLICY "Service role full access" ON chat_messages
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- User read access (only messages from their sessions)
+CREATE POLICY "Users can read own messages" ON chat_messages
+  FOR SELECT USING (
+    auth.uid() = user_id AND EXISTS (
+      SELECT 1 FROM chat_sessions 
+      WHERE chat_sessions.id = chat_messages.session_id 
+      AND chat_sessions.user_id = auth.uid()
+    )
+  );
+
+-- User insert access (default user_id)
+CREATE POLICY "Users can create own messages" ON chat_messages
+  FOR INSERT WITH CHECK (
+    auth.uid() = user_id AND EXISTS (
+      SELECT 1 FROM chat_sessions 
+      WHERE chat_sessions.id = session_id 
+      AND chat_sessions.user_id = auth.uid()
+    )
+  );
+
+-- User update access
+CREATE POLICY "Users can update own messages" ON chat_messages
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- User delete access
+CREATE POLICY "Users can delete own messages" ON chat_messages
+  FOR DELETE USING (auth.uid() = user_id);
 
 -- =============================================================================
 -- SUCCESS MESSAGE
 -- =============================================================================
 
-SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG!' as final_result;
+SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG with RLS!' as final_result;
 
 -- =============================================================================
 -- WHAT WAS CREATED:
@@ -360,18 +476,41 @@ SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG!' as final_result;
 -- 
 -- ✅ Tables:
 --    - rag_chunks (with VECTOR for multi-model dimensions)
+--    - documents_registry (with user_id for RLS)
+--    - document_metadata (with user_id for RLS)
+--    - chat_sessions (with user_id for RLS)
+--    - chat_messages (with user_id for RLS)
 -- 
 -- ✅ Indexes:
 --    - IVFFlat vector indexes for 1024 and 1536 dimensions
 --    - B-tree indexes for fast filtering
+--    - User-scoped indexes: (user_id, created_at DESC) on all auth tables
 -- 
 -- ✅ Functions:
 --    - match_chunks() - vector similarity search
 --    - get_chunk_stats() - database statistics
+--    - cleanup_orphaned_chunks() - cleanup helper
+--    - cleanup_failed_documents() - cleanup helper
 -- 
--- ✅ Security:
---    - Row Level Security enabled
---    - Policies for service role, authenticated users, and anonymous access
+-- ✅ Security (Row Level Security):
+--    - rag_chunks: anonymous/authenticated read access
+--    - documents_registry: user-scoped access + service role bypass
+--    - document_metadata: user-scoped access + service role bypass
+--    - chat_sessions: user-scoped access + service role bypass
+--    - chat_messages: user-scoped access with session isolation + service role bypass
+--
+--    For each table:
+--      • Service role can access everything (FOR ALL)
+--      • Users can SELECT only their own records (user_id = auth.uid())
+--      • Users can INSERT only with their user_id
+--      • Users can UPDATE only their own records
+--      • Users can DELETE only their own records
+-- 
+-- ✅ Multi-User Isolation:
+--    - All user tables default user_id to auth.uid()
+--    - Policies enforce user_id ownership at database level
+--    - Foreign key cascades maintain isolation boundaries
+--    - Service role (backend) can bypass RLS for admin operations
 -- 
 -- =============================================================================
 -- NEXT STEPS:
@@ -385,21 +524,25 @@ SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG!' as final_result;
 --    OLLAMA_EMBED_MODEL=mxbai-embed-large
 --    OPENAI_EMBED_MODEL=text-embedding-3-small
 -- 
--- 2. Start your FastAPI backend:
+-- 2. Update your Python backend to use service_role for admin operations
+--    (e.g., seeding, migrations, batch operations)
+-- 
+-- 3. Start your FastAPI backend:
 --    uvicorn main:app --reload --port 8000
 -- 
--- 3. Test the health check:
+-- 4. Test the health check:
 --    curl http://localhost:8000/healthz
 -- 
--- 4. Seed your knowledge base:
+-- 5. Seed your knowledge base (using service role):
 --    curl -X POST http://localhost:8000/seed
 -- 
--- 5. Ask your first question:
+-- 6. Ask your first question (using authenticated token):
 --    curl -X POST http://localhost:8000/answer \
+--      -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
 --      -H "Content-Type: application/json" \
 --      -d '{"query": "What is your return policy?"}'
 -- 
--- 6. Visit interactive docs:
+-- 7. Visit interactive docs:
 --    http://localhost:8000/docs
 -- 
 -- =============================================================================
