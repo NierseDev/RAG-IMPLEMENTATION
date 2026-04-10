@@ -1,8 +1,9 @@
 """
 RAG retrieval service for vector search and query processing.
 Enhanced with hybrid search (vector + keyword) support (Sprint 3).
+Integrated with metadata filtering (Sprint 4).
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from app.core.database import db
 from app.services.embedding import embedding_service
 from app.models.entities import RetrievalResult
@@ -21,6 +22,7 @@ class RetrievalService:
         self.keyword_search = None
         self.hybrid_fusion = None
         self.context_optimizer = None
+        self.metadata_filter = None
         
         # Sprint 3: Load hybrid search components if enabled
         if settings.use_hybrid_search:
@@ -40,6 +42,14 @@ class RetrievalService:
             logger.info("Context optimizer enabled")
         except ImportError:
             logger.warning("Context optimizer not available")
+        
+        # Sprint 4: Load metadata filter
+        try:
+            from app.services.metadata_filter import metadata_filter
+            self.metadata_filter = metadata_filter
+            logger.info("Metadata filtering enabled")
+        except ImportError:
+            logger.warning("Metadata filter not available")
     
     async def retrieve(
         self,
@@ -49,11 +59,14 @@ class RetrievalService:
         filter_source: Optional[str] = None,
         filter_provider: Optional[str] = None,
         filter_model: Optional[str] = None,
-        use_hybrid: Optional[bool] = None
+        use_hybrid: Optional[bool] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        filter_logic: str = "AND"
     ) -> List[RetrievalResult]:
         """
         Retrieve relevant chunks for a query.
         Sprint 3: Supports hybrid search (vector + keyword).
+        Sprint 4: Integrated metadata filtering with optional reranking.
         """
         try:
             # Sprint 3: Optimize top_k using context optimizer if available
@@ -70,7 +83,7 @@ class RetrievalService:
             
             # Sprint 3: Use hybrid search if enabled and available
             if use_hybrid and self.keyword_search and self.hybrid_fusion:
-                return await self._hybrid_retrieve(
+                results = await self._hybrid_retrieve(
                     query=query,
                     top_k=top_k,
                     min_similarity=min_similarity,
@@ -80,7 +93,7 @@ class RetrievalService:
                 )
             else:
                 # Fall back to vector-only search
-                return await self._vector_retrieve(
+                results = await self._vector_retrieve(
                     query=query,
                     top_k=top_k,
                     min_similarity=min_similarity,
@@ -88,6 +101,23 @@ class RetrievalService:
                     filter_provider=filter_provider,
                     filter_model=filter_model
                 )
+            
+            # Sprint 4: Apply metadata filtering if provided
+            if metadata_filters and self.metadata_filter:
+                results = self.metadata_filter.apply_filters(
+                    results,
+                    metadata_filters,
+                    logic=filter_logic
+                )
+                # Rerank by filter score combined with vector similarity
+                results = self.metadata_filter.rerank_by_filters(
+                    results,
+                    metadata_filters,
+                    filter_weight=0.2
+                )
+                logger.info(f"Applied metadata filters: {len(results)} results after filtering")
+            
+            return results
             
         except Exception as e:
             logger.error(f"Error in retrieval: {e}")

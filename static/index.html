@@ -648,5 +648,28 @@
             }
         }
     </script>
+    
+    <!-- State Management System -->
+    <script src="js/state-manager.js"></script>
+    
+    <!-- Initialize State Manager -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize the global state manager
+            const stateManager = initStateManager({
+                persistenceEnabled: true,
+                persistenceKey: 'rag-app-state',
+                statusUpdateInterval: 5000
+            });
+            
+            // Log initialization
+            console.log('✓ State Manager Initialized');
+            
+            // Load initial data
+            stateManager.dispatch('loadSessions');
+            stateManager.dispatch('loadDocuments');
+            stateManager.dispatch('refreshSystemStatus');
+        });
+    </script>
 </body>
 </html>

@@ -1,14 +1,18 @@
 """
 Agentic RAG coordinator with multi-step reasoning loop.
 Implements: Plan → Retrieve → Reason → Verify → Decide → Answer/Iterate
-Enhanced with: SQL Tool, Web Search Tool, Agent Router, Sub-Agents
+Enhanced with: SQL Tool, Web Search Tool, Agent Router (Sprint 4), Sub-Agents
+Integration: Workflow Orchestrator (Sprint 4, Group 3, Task 2)
 """
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import time
 from app.models.entities import AgentState, RetrievalResult
 from app.services.llm import llm_service
 from app.services.retrieval import retrieval_service
 from app.services.verification import verification_service
+from app.services.agent_router import agent_router, ToolType
+from app.services.workflow_orchestrator import orchestrator, Workflow, ExecutionMode, RetryConfig
+from app.services.tool_handlers import create_tool_handlers
 from app.core.config import settings
 import logging
 
@@ -18,7 +22,8 @@ logger = logging.getLogger(__name__)
 class AgenticRAG:
     """
     Agentic RAG system with self-reflective reasoning loop.
-    Enhanced with multi-tool support and sub-agent delegation.
+    Enhanced with multi-tool support, agent router (Sprint 4), and sub-agent delegation.
+    Integration: Workflow Orchestrator for intelligent tool sequencing (Sprint 4, Group 3, Task 2).
     """
     
     def __init__(
@@ -32,27 +37,43 @@ class AgenticRAG:
         self.min_confidence = min_confidence or settings.min_confidence_threshold
         self.enable_verification = enable_verification if enable_verification is not None else settings.enable_verification
         self.enable_tools = enable_tools
+        self.routing_history: List[Dict[str, Any]] = []
+        self.orchestrator = orchestrator
+        self.orchestrator_metrics: List[Dict[str, Any]] = []
         
         # Initialize tools if enabled
         self.sql_tool = None
         self.web_search_tool = None
-        self.agent_router = None
         
         if self.enable_tools:
             try:
                 from app.tools.sql_tool import sql_tool
                 from app.tools.web_search_tool import web_search_tool
-                from app.tools.agent_router import agent_router, ToolType
+                from app.services.query_service import query_service
+                from app.services.metadata_filter import metadata_filter
                 
                 self.sql_tool = sql_tool
                 self.web_search_tool = web_search_tool
-                self.agent_router = agent_router
+                self.query_service = query_service
+                self.metadata_filter = metadata_filter
                 
                 # Register tools with router
-                self.agent_router.register_tool(ToolType.SQL, self.sql_tool)
-                self.agent_router.register_tool(ToolType.WEB_SEARCH, self.web_search_tool)
+                agent_router.register_tool(ToolType.SQL, self.sql_tool)
+                agent_router.register_tool(ToolType.WEB_SEARCH, self.web_search_tool)
                 
-                logger.info("AgenticRAG tools initialized: SQL, Web Search, Router")
+                # Initialize workflow orchestrator with tool handlers (Sprint 4, Group 3, Task 2)
+                handlers = create_tool_handlers(
+                    retrieval_service=retrieval_service,
+                    query_service=query_service,
+                    sql_tool=sql_tool,
+                    web_search_tool=web_search_tool,
+                    metadata_filter=metadata_filter
+                )
+                
+                for tool_type, handler in handlers.items():
+                    self.orchestrator.add_tool(tool_type, handler)
+                
+                logger.info("AgenticRAG tools initialized: SQL, Web Search, Workflow Orchestrator (Sprint 4, Group 3, Task 2)")
             except Exception as e:
                 logger.warning(f"Failed to initialize tools: {e}. Running without tools.")
                 self.enable_tools = False
@@ -63,10 +84,13 @@ class AgenticRAG:
         self,
         query: str,
         top_k: Optional[int] = None,
-        filter_source: Optional[str] = None
+        filter_source: Optional[str] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        filter_logic: str = "AND"
     ) -> AgentState:
         """
         Execute agentic RAG query with full reasoning loop.
+        Sprint 4: Supports metadata filtering.
         """
         start_time = time.time()
         
@@ -90,7 +114,13 @@ class AgenticRAG:
             state.add_reasoning("PLAN", plan)
             
             # Phase 2: Retrieve
-            retrieved = await self._retrieve_phase(state, top_k, filter_source)
+            retrieved = await self._retrieve_phase(
+                state, 
+                top_k, 
+                filter_source,
+                metadata_filters,
+                filter_logic
+            )
             state.retrieved_docs.extend(retrieved)
             state.add_reasoning("RETRIEVE", f"Retrieved {len(retrieved)} documents")
             
@@ -165,14 +195,17 @@ class AgenticRAG:
         return state
     
     async def _plan_phase(self, state: AgentState) -> str:
-        """Phase 1: Create retrieval plan and determine tool usage."""
+        """Phase 1: Create retrieval plan with intelligent routing (Sprint 4)."""
         try:
-            # Check if we should use alternative tools
-            if self.enable_tools and self.agent_router:
-                routing = await self.agent_router.route(state.current_query, context={'iteration': state.iteration})
-                if routing.get('success'):
-                    tool_plan = routing.get('tool_plan', [])
-                    state.add_reasoning("ROUTE", f"Tools planned: {[t.value for t in tool_plan]}")
+            # Intelligent routing decision
+            if self.enable_tools:
+                routing_decision = agent_router.route_query(
+                    state.current_query,
+                    context={'iteration': state.iteration, 'use_hybrid': True}
+                )
+                self.routing_history.append(routing_decision.to_dict())
+                state.add_reasoning("ROUTE", f"{routing_decision.reasoning}")
+                logger.info(f"Routing decision: {routing_decision.query_type.value} (confidence: {routing_decision.confidence:.2f})")
             
             prompt = llm_service.create_plan_prompt(state.current_query)
             plan = await llm_service.generate(prompt, temperature=0.5, max_tokens=200)
@@ -185,15 +218,19 @@ class AgenticRAG:
         self,
         state: AgentState,
         top_k: Optional[int],
-        filter_source: Optional[str]
+        filter_source: Optional[str],
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        filter_logic: str = "AND"
     ) -> list[RetrievalResult]:
         """Phase 2: Execute retrieval with optional tool usage."""
         try:
-            # Standard RAG retrieval
+            # Standard RAG retrieval with metadata filters (Sprint 4)
             results = await retrieval_service.retrieve(
                 query=state.current_query,
                 top_k=top_k,
-                filter_source=filter_source
+                filter_source=filter_source,
+                metadata_filters=metadata_filters,
+                filter_logic=filter_logic
             )
             
             # Check if we should use web search as fallback
@@ -314,6 +351,122 @@ class AgenticRAG:
             logger.error(f"Error refining query: {e}")
             # Fallback: slightly rephrase original query
             return f"{state.original_query} information"
+    
+    async def execute_with_orchestrator(
+        self,
+        query: str,
+        routing_decision=None,
+        top_k: Optional[int] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        mode: ExecutionMode = ExecutionMode.SEQUENTIAL,
+        timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute tools using the workflow orchestrator with intelligent routing.
+        Sprint 4, Group 3, Task 2: Workflow Orchestration
+        
+        Args:
+            query: Input query
+            routing_decision: Optional routing decision from agent_router
+            top_k: Number of results
+            metadata_filters: Optional metadata filters
+            mode: Sequential or parallel execution
+            timeout: Timeout for execution
+            
+        Returns:
+            Dict with orchestration results and metrics
+        """
+        if not self.enable_tools:
+            return {
+                'success': False,
+                'error': 'Tools not enabled',
+                'results': []
+            }
+        
+        try:
+            # Use routing decision if provided, otherwise get from router
+            if not routing_decision and self.enable_tools:
+                routing_decision = agent_router.route_query(query)
+            
+            # Prepare context
+            context = {
+                'query': query,
+                'top_k': top_k or settings.top_k_results,
+                'metadata_filters': metadata_filters,
+                'filter_logic': 'AND'
+            }
+            
+            # Build workflow based on routing decision
+            if routing_decision:
+                tools = [routing_decision.primary_tool] + routing_decision.fallback_tools
+                workflow_name = f"orchestrated_{routing_decision.query_type.value}"
+            else:
+                # Default: try hybrid then vector
+                tools = [ToolType.HYBRID, ToolType.VECTOR]
+                workflow_name = "default_orchestration"
+            
+            # Create and execute workflow
+            workflow = Workflow(
+                name=workflow_name,
+                tools=tools,
+                mode=mode,
+                timeout=timeout or 30.0,
+                retry_config=RetryConfig(max_retries=1, backoff_factor=2.0),
+                context=context
+            )
+            
+            logger.info(f"Orchestrating tool execution: {workflow_name} ({mode.value})")
+            
+            # Execute workflow
+            if mode == ExecutionMode.PARALLEL:
+                result = await self.orchestrator.execute_parallel(workflow, query)
+            else:
+                result = await self.orchestrator.execute_sequential(workflow, query)
+            
+            # Store metrics
+            self.orchestrator_metrics.append({
+                'workflow': workflow_name,
+                'success': result.success,
+                'duration': result.total_duration(),
+                'executions': len(result.executions),
+                'successful': len(result.successful_executions()),
+                'timestamp': time.time()
+            })
+            
+            # Format response
+            return {
+                'success': result.success,
+                'results': result.all_results,
+                'primary_result': result.primary_result,
+                'execution_count': len(result.executions),
+                'duration': result.total_duration(),
+                'history': result.execution_history,
+                'error': result.error,
+                'executions': [e.to_dict() for e in result.executions]
+            }
+        
+        except Exception as e:
+            logger.exception(f"Orchestrator execution error: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'results': []
+            }
+    
+    def get_orchestrator_metrics(self) -> Dict[str, Any]:
+        """Get orchestrator execution metrics."""
+        metrics = self.orchestrator.get_metrics()
+        
+        return {
+            'orchestrator_stats': metrics,
+            'workflow_executions': self.orchestrator_metrics,
+            'total_orchestrated_queries': len(self.orchestrator_metrics),
+            'average_success_rate': (
+                sum(1 for m in self.orchestrator_metrics if m['success']) / len(self.orchestrator_metrics)
+                if self.orchestrator_metrics else 0.0
+            )
+        }
+    
     async def execute_sql_query(self, natural_language_query: str) -> Dict[str, Any]:
         """
         Execute a SQL query from natural language.
@@ -364,6 +517,188 @@ class AgenticRAG:
             return result
         except Exception as e:
             logger.error(f"Web search error: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    # ==================== DELEGATION LOGIC (Sprint 5) ====================
+    
+    def should_delegate(
+        self,
+        state: AgentState,
+        routing_decision: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Determine if main agent should delegate to a sub-agent.
+        
+        Delegation triggers for:
+        1. Full document analysis - large documents that should be processed whole
+        2. Cross-document comparison - comparing multiple documents
+        3. Structured extraction - extracting entities/data from documents
+        
+        Args:
+            state: Current agent state
+            routing_decision: Optional routing decision from agent_router
+            
+        Returns:
+            Tuple of (should_delegate: bool, sub_agent_type: Optional[str])
+            Sub-agent types: 'full_document', 'comparison', 'extraction'
+        """
+        # Check if we have enough documents to delegate
+        if len(state.retrieved_docs) < 2:
+            return False, None
+        
+        # Check query for delegation indicators
+        query_lower = state.current_query.lower()
+        
+        # Full document analysis trigger
+        if any(keyword in query_lower for keyword in [
+            'entire document', 'whole document', 'full document',
+            'complete analysis', 'full text', 'overall'
+        ]):
+            logger.info("Delegation trigger: Full document analysis detected")
+            return True, 'full_document'
+        
+        # Comparison trigger
+        if any(keyword in query_lower for keyword in [
+            'compare', 'comparison', 'difference', 'contrast', 'versus', 'vs',
+            'between', 'among', 'similar', 'different', 'both'
+        ]):
+            logger.info("Delegation trigger: Comparison analysis detected")
+            return True, 'comparison'
+        
+        # Extraction trigger
+        if any(keyword in query_lower for keyword in [
+            'extract', 'extraction', 'list', 'enumerate', 'identify',
+            'find all', 'what are', 'which', 'entities', 'items'
+        ]):
+            logger.info("Delegation trigger: Structured extraction detected")
+            return True, 'extraction'
+        
+        return False, None
+    
+    async def spawn_subagent(
+        self,
+        sub_agent_type: str,
+        state: AgentState,
+        routing_decision: Optional[Dict[str, Any]] = None
+    ) -> Optional['SubAgent']:
+        """
+        Spawn a sub-agent for specialized reasoning.
+        
+        Args:
+            sub_agent_type: Type of sub-agent ('full_document', 'comparison', 'extraction')
+            state: Current agent state with retrieved documents
+            routing_decision: Optional routing decision context
+            
+        Returns:
+            Initialized SubAgent instance, or None if spawn fails
+        """
+        try:
+            from app.services.subagent_base import SubAgent
+            
+            # Prepare parent context
+            parent_context = {
+                'original_query': state.original_query,
+                'current_query': state.current_query,
+                'routing_decision': routing_decision,
+                'document_set': state.retrieved_docs,
+                'delegation_reason': sub_agent_type,
+                'iteration': state.iteration
+            }
+            
+            # Create appropriate sub-agent
+            if sub_agent_type == 'full_document':
+                from app.services.subagents.full_document_agent import FullDocumentAgent
+                sub_agent = FullDocumentAgent(parent_context=parent_context)
+                
+            elif sub_agent_type == 'comparison':
+                from app.services.subagents.comparison_agent import ComparisonAgent
+                sub_agent = ComparisonAgent(parent_context=parent_context)
+                
+            elif sub_agent_type == 'extraction':
+                from app.services.subagents.extraction_agent import ExtractionAgent
+                sub_agent = ExtractionAgent(parent_context=parent_context)
+                
+            else:
+                logger.error(f"Unknown sub-agent type: {sub_agent_type}")
+                return None
+            
+            logger.info(
+                f"SubAgent spawned: type={sub_agent_type}, docs={len(state.retrieved_docs)}, "
+                f"query={state.current_query[:60]}..."
+            )
+            
+            return sub_agent
+            
+        except Exception as e:
+            logger.error(f"Failed to spawn sub-agent: {e}")
+            return None
+    
+    async def execute_with_subagent(
+        self,
+        sub_agent_type: str,
+        state: AgentState,
+        query: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute query using a sub-agent.
+        
+        Args:
+            sub_agent_type: Type of sub-agent
+            state: Current agent state
+            query: Optional query override (defaults to state.current_query)
+            
+        Returns:
+            Dict with sub-agent results and metrics
+        """
+        query = query or state.current_query
+        
+        try:
+            # Spawn sub-agent
+            sub_agent = await self.spawn_subagent(sub_agent_type, state)
+            if not sub_agent:
+                return {
+                    'success': False,
+                    'error': f'Failed to spawn {sub_agent_type} sub-agent'
+                }
+            
+            # Execute sub-agent
+            start_time = time.time()
+            sub_state = await sub_agent.execute(query)
+            duration = time.time() - start_time
+            
+            # Aggregate results
+            result = {
+                'success': True,
+                'sub_agent_type': sub_agent_type,
+                'answer': sub_state.final_answer,
+                'confidence': sub_state.confidence,
+                'sources': sub_state.sources,
+                'iterations': sub_state.iteration,
+                'retrieved_docs': len(sub_state.retrieved_docs),
+                'reasoning_trace': sub_state.reasoning,
+                'verification_results': sub_state.verification_results,
+                'duration': duration,
+                'metrics': sub_agent.get_metrics()
+            }
+            
+            # Update parent state with sub-agent reasoning
+            state.add_reasoning(
+                "SUBAGENT_DELEGATION",
+                f"Delegated to {sub_agent_type} sub-agent, got answer: {sub_state.final_answer[:100]}..."
+            )
+            
+            logger.info(
+                f"Sub-agent execution complete: type={sub_agent_type}, "
+                f"duration={duration:.2f}s, confidence={sub_state.confidence}"
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing with sub-agent: {e}")
             return {
                 'success': False,
                 'error': str(e)

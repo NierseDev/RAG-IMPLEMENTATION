@@ -8,12 +8,15 @@ A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with mul
 - **✓ Hallucination Prevention**: Ground checking, citation requirements, and confidence scoring
 - **🔄 Iterative Query Refinement**: Agent refines queries based on retrieved information
 - **📄 Multi-Format Documents**: Process PDF, DOCX, PPTX, HTML, Markdown using Docling
-- **🔍 Vector Semantic Search**: Fast similarity search with Supabase pgvector
+- **🔍 Hybrid Search**: Vector + keyword search with RRF fusion and metadata filtering (Sprint 4)
 - **✅ Verification System**: Validates answers against retrieved context
 - **🌐 REST API**: Clean FastAPI endpoints with auto-generated docs
 - **🖥️ Debug Web UI**: Real-time visualization of agent reasoning
 - **📤 Batch Upload**: Multiple file upload with duplicate detection
 - **🔄 Smart Duplicate Handling**: Skip, Replace, or Append modes for existing files
+- **🛠️ Intelligent Tool Routing**: Query classification with automatic tool selection (Sprint 4)
+- **⚙️ Multi-Tool Workflows**: Sequential/parallel/conditional execution with fallbacks (Sprint 4)
+- **📋 Frontend State Management**: Pub/sub state system with localStorage persistence (Sprint 4)
 
 ## 🏗️ Architecture
 
