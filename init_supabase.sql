@@ -21,14 +21,65 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- =============================================================================
--- STEP 2: Create the main RAG chunks table
+-- STEP 2: Create documents_registry table (moved before rag_chunks for FK dependency)
+-- =============================================================================
+
+CREATE TABLE documents_registry (
+    id BIGSERIAL PRIMARY KEY,
+    user_id UUID DEFAULT auth.uid(),
+    filename TEXT NOT NULL,
+    source TEXT UNIQUE,
+    file_hash TEXT NOT NULL UNIQUE,
+    file_size BIGINT NOT NULL,
+    upload_date TIMESTAMPTZ DEFAULT now(),
+    source_type TEXT NOT NULL CHECK (source_type IN ('pdf', 'docx', 'pptx', 'html', 'markdown', 'txt', 'other')),
+    status TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed', 'failed')),
+    chunk_count INT DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Indexes for documents_registry
+CREATE INDEX documents_registry_hash_idx ON documents_registry (file_hash);
+CREATE INDEX documents_registry_filename_idx ON documents_registry (filename);
+CREATE INDEX documents_registry_upload_date_idx ON documents_registry (upload_date DESC);
+CREATE INDEX documents_registry_status_idx ON documents_registry (status);
+CREATE INDEX documents_registry_user_id_idx ON documents_registry (user_id, created_at DESC);
+
+-- Enable RLS on documents_registry
+ALTER TABLE documents_registry ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy (for DEBUG/backend access)
+CREATE POLICY "Service role full access" ON documents_registry
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- User read access
+CREATE POLICY "Users can read own documents" ON documents_registry
+  FOR SELECT USING (auth.uid() = user_id);
+
+-- User insert access (default user_id)
+CREATE POLICY "Users can insert own documents" ON documents_registry
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- User update access
+CREATE POLICY "Users can update own documents" ON documents_registry
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- User delete access
+CREATE POLICY "Users can delete own documents" ON documents_registry
+  FOR DELETE USING (auth.uid() = user_id);
+
+-- =============================================================================
+-- STEP 3: Create the main RAG chunks table (now can reference documents_registry)
 -- =============================================================================
 
 CREATE TABLE rag_chunks (
     id BIGSERIAL PRIMARY KEY,
     chunk_id TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL,
-    document_id BIGINT REFERENCES documents_registry(id) ON DELETE CASCADE,
+    document_id BIGINT,
     text TEXT NOT NULL,
     ai_provider TEXT NOT NULL DEFAULT 'ollama' CHECK (ai_provider IN ('ollama', 'openai')),
     embedding_model TEXT NOT NULL DEFAULT 'mxbai-embed-large',
@@ -37,8 +88,13 @@ CREATE TABLE rag_chunks (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Add foreign key constraint to documents_registry (with cascade delete)
+ALTER TABLE rag_chunks 
+ADD CONSTRAINT fk_rag_chunks_document_id 
+FOREIGN KEY (document_id) REFERENCES documents_registry(id) ON DELETE CASCADE;
+
 -- =============================================================================
--- STEP 3: Create performance indexes for fast vector search
+-- STEP 4: Create performance indexes for fast vector search
 -- =============================================================================
 
 -- Create per-dimension vector indexes for supported embedding models.
@@ -64,7 +120,7 @@ CREATE INDEX rag_chunks_model_idx ON rag_chunks (embedding_model);
 CREATE INDEX rag_chunks_document_id_idx ON rag_chunks (document_id);
 
 -- =============================================================================
--- STEP 4: Create vector similarity search function
+-- STEP 5: Create vector similarity search function
 -- =============================================================================
 
 CREATE OR REPLACE FUNCTION match_chunks (
@@ -209,58 +265,7 @@ SELECT
 FROM get_chunk_stats();
 
 -- =============================================================================
--- STEP 8: Create documents_registry table (Phase 2.5)
--- =============================================================================
-
-CREATE TABLE documents_registry (
-    id BIGSERIAL PRIMARY KEY,
-    user_id UUID DEFAULT auth.uid(),
-    filename TEXT NOT NULL,
-    source TEXT UNIQUE,
-    file_hash TEXT NOT NULL UNIQUE,
-    file_size BIGINT NOT NULL,
-    upload_date TIMESTAMPTZ DEFAULT now(),
-    source_type TEXT NOT NULL CHECK (source_type IN ('pdf', 'docx', 'pptx', 'html', 'markdown', 'txt', 'other')),
-    status TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed', 'failed')),
-    chunk_count INT DEFAULT 0,
-    error_message TEXT,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Indexes for documents_registry
-CREATE INDEX documents_registry_hash_idx ON documents_registry (file_hash);
-CREATE INDEX documents_registry_filename_idx ON documents_registry (filename);
-CREATE INDEX documents_registry_upload_date_idx ON documents_registry (upload_date DESC);
-CREATE INDEX documents_registry_status_idx ON documents_registry (status);
-CREATE INDEX documents_registry_user_id_idx ON documents_registry (user_id, created_at DESC);
-
--- Enable RLS on documents_registry
-ALTER TABLE documents_registry ENABLE ROW LEVEL SECURITY;
-
--- Service role policy (for DEBUG/backend access)
-CREATE POLICY "Service role full access" ON documents_registry
-  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
-
--- User read access
-CREATE POLICY "Users can read own documents" ON documents_registry
-  FOR SELECT USING (auth.uid() = user_id);
-
--- User insert access (default user_id)
-CREATE POLICY "Users can insert own documents" ON documents_registry
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
-
--- User update access
-CREATE POLICY "Users can update own documents" ON documents_registry
-  FOR UPDATE USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- User delete access
-CREATE POLICY "Users can delete own documents" ON documents_registry
-  FOR DELETE USING (auth.uid() = user_id);
-
--- =============================================================================
--- STEP 9: Create document_metadata table (Phase 2.5)
+-- STEP 8: Create document_metadata table (Phase 2.5)
 -- =============================================================================
 
 CREATE TABLE document_metadata (
@@ -305,7 +310,7 @@ CREATE POLICY "Users can delete own document metadata" ON document_metadata
   FOR DELETE USING (auth.uid() = user_id);
 
 -- =============================================================================
--- STEP 10: Add full-text search to rag_chunks (Phase 2.5)
+-- STEP 9: Add full-text search to rag_chunks (Phase 2.5)
 -- =============================================================================
 
 -- Add tsvector column for full-text search
