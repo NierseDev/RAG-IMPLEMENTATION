@@ -80,6 +80,28 @@ class SimpleRAGResponse(BaseModel):
     retrieved_chunks: int = 0
 
 
+class HybridSearchBreakdown(BaseModel):
+    """Breakdown of hybrid search results."""
+    vector_results: int = 0
+    keyword_results: int = 0
+    vector_score: Optional[float] = None
+    keyword_score: Optional[float] = None
+    fused_results: int = 0
+    after_filter: int = 0
+    method: str = "vector-only"
+
+
+class HybridSearchResponse(BaseModel):
+    """Response from hybrid search query."""
+    query: str
+    results: List[Dict[str, Any]] = Field(default_factory=list)
+    retrieved_chunks: int = 0
+    retrieval_method: str = "vector-only"
+    filter_applied: bool = False
+    processing_time_ms: float = 0.0
+    search_breakdown: HybridSearchBreakdown = Field(default_factory=HybridSearchBreakdown)
+
+
 class HealthResponse(BaseModel):
     """System health check response."""
     status: str

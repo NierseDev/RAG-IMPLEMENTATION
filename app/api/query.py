@@ -2,12 +2,13 @@
 Query endpoints for agentic RAG.
 """
 from fastapi import APIRouter, HTTPException
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import time
-from app.models.requests import QueryRequest, SimpleQueryRequest
-from app.models.responses import AgentResponse, SimpleRAGResponse
+from app.models.requests import QueryRequest, SimpleQueryRequest, HybridSearchRequest
+from app.models.responses import AgentResponse, SimpleRAGResponse, HybridSearchResponse
 from app.services.agent import create_agent
 from app.services.retrieval import retrieval_service
+from app.services.query_service import query_service
 from app.services.llm import llm_service
 from app.core.database import get_supabase_client
 import logging
@@ -22,6 +23,7 @@ async def agentic_query(request: QueryRequest):
     """
     Execute agentic RAG query with full reasoning loop.
     The agent will iteratively retrieve, reason, and verify until confident or max iterations reached.
+    Sprint 4: Supports metadata filtering with AND/OR logic.
     """
     start_time = time.time()
     
@@ -29,11 +31,14 @@ async def agentic_query(request: QueryRequest):
         # Create agent instance
         agent = create_agent()
         
-        # Execute agentic query
+        # Sprint 4: Store metadata filters in agent state for retrieval
+        # We'll need to extend the agent to pass filters to retrieve
         state = await agent.query(
             query=request.query,
             top_k=request.top_k,
-            filter_source=request.filter_source
+            filter_source=request.filter_source,
+            metadata_filters=request.metadata_filters,
+            filter_logic=request.filter_logic
         )
         
         processing_time = time.time() - start_time
@@ -117,12 +122,15 @@ async def simple_query(request: SimpleQueryRequest):
     """
     Simple RAG query without agentic reasoning.
     Single retrieval + answer generation.
+    Sprint 4: Supports metadata filtering.
     """
     try:
         # Retrieve relevant chunks
         results = await retrieval_service.retrieve(
             query=request.query,
-            top_k=request.top_k
+            top_k=request.top_k,
+            metadata_filters=request.metadata_filters,
+            filter_logic=request.filter_logic
         )
         
         if not results:
@@ -160,6 +168,62 @@ async def simple_query(request: SimpleQueryRequest):
     except Exception as e:
         logger.error(f"Error in simple query: {e}")
         raise HTTPException(status_code=500, detail=f"Query error: {str(e)}")
+
+
+@router.post("/hybrid", response_model=HybridSearchResponse)
+async def hybrid_search(request: HybridSearchRequest):
+    """
+    Hybrid search query combining vector and keyword search (Sprint 4).
+    
+    Implements:
+    - Vector search (top 20 results)
+    - Keyword search with FTS (top 20 results)
+    - RRF fusion with configurable weights
+    - Optional metadata filtering
+    - Returns top 10 reranked results with search breakdown
+    """
+    start_time = time.time()
+    
+    try:
+        logger.info(f"Hybrid search request: query='{request.query}', filters={request.metadata_filters}")
+        
+        # Execute hybrid search
+        search_result = await query_service.search(
+            query=request.query,
+            metadata_filters=request.metadata_filters,
+            top_k=request.top_k,
+            use_hybrid=request.use_hybrid,
+            min_similarity=request.min_similarity
+        )
+        
+        # Check for errors
+        if 'error' in search_result:
+            logger.error(f"Search error: {search_result['error']}")
+            raise HTTPException(status_code=500, detail=f"Search failed: {search_result['error']}")
+        
+        # Format response
+        formatted = query_service.format_results(search_result, include_breakdown=True)
+        
+        logger.info(
+            f"Hybrid search completed: {len(formatted['results'])} results in "
+            f"{formatted['processing_time_ms']:.1f}ms using {formatted['retrieval_method']}"
+        )
+        
+        return HybridSearchResponse(
+            query=formatted['query'],
+            results=formatted['results'],
+            retrieved_chunks=formatted['retrieved_chunks'],
+            retrieval_method=formatted['retrieval_method'],
+            filter_applied=formatted['filter_applied'],
+            processing_time_ms=formatted['processing_time_ms'],
+            search_breakdown=formatted['search_breakdown']
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in hybrid search: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Hybrid search error: {str(e)}")
 
 
 # ============================================================================
