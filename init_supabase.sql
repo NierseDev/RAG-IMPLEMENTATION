@@ -275,7 +275,7 @@ CREATE TABLE document_metadata (
 CREATE INDEX document_metadata_doc_id_idx ON document_metadata (document_id);
 CREATE INDEX document_metadata_key_idx ON document_metadata (key);
 CREATE INDEX document_metadata_json_idx ON document_metadata USING gin (value_json);
-CREATE INDEX document_metadata_user_id_idx ON document_metadata (user_id, created_at DESC);
+CREATE INDEX document_metadata_user_id_idx ON document_metadata (user_id, extracted_at DESC);
 
 -- Enable RLS on document_metadata
 ALTER TABLE document_metadata ENABLE ROW LEVEL SECURITY;
