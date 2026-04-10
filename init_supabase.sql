@@ -337,14 +337,7 @@ EXECUTE FUNCTION update_text_search();
 UPDATE rag_chunks SET text_search = to_tsvector('english', text) WHERE text_search IS NULL;
 
 -- =============================================================================
--- STEP 11: Add document_id foreign key to rag_chunks
--- =============================================================================
-
-ALTER TABLE rag_chunks ADD COLUMN document_id BIGINT REFERENCES documents_registry(id) ON DELETE CASCADE;
-CREATE INDEX rag_chunks_document_id_idx ON rag_chunks (document_id);
-
--- =============================================================================
--- STEP 12: Create helper functions for cleanup
+-- STEP 11: Create helper functions for cleanup
 -- =============================================================================
 
 -- Function to cleanup orphaned chunks (chunks without a document)
@@ -382,7 +375,7 @@ END;
 $$;
 
 -- =============================================================================
--- STEP 13: Create chat sessions tables (Phase 2)
+-- STEP 12: Create chat sessions tables (Phase 2)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
