@@ -1,9 +1,9 @@
 """
 Unified Debug Tool for RAG System
 Usage:
-    python debug.py query "Your question here"    # Single query with detailed output
-    python debug.py interactive                     # Interactive multi-query session
-    python debug.py ollama                          # Test Ollama connection directly
+    python tools\debug\debug.py query "Your question here"    # Single query with detailed output
+    python tools\debug\debug.py interactive                     # Interactive multi-query session
+    python tools\debug\debug.py ollama                          # Test Ollama connection directly
 """
 import asyncio
 import logging
@@ -214,20 +214,20 @@ def show_help():
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 USAGE:
-    python debug.py query "Your question here"    # Single query with detailed output
-    python debug.py interactive                     # Interactive multi-query session
-    python debug.py ollama                          # Test Ollama connection directly
-    python debug.py help                            # Show this help message
+    python tools\debug\debug.py query "Your question here"    # Single query with detailed output
+    python tools\debug\debug.py interactive                     # Interactive multi-query session
+    python tools\debug\debug.py ollama                          # Test Ollama connection directly
+    python tools\debug\debug.py help                            # Show this help message
 
 EXAMPLES:
     # Test a single query
-    python debug.py query "What is Deep Q Learning?"
+    python tools\debug\debug.py query "What is Deep Q Learning?"
     
     # Interactive mode for multiple queries
-    python debug.py interactive
+    python tools\debug\debug.py interactive
     
     # Test if Ollama is working
-    python debug.py ollama
+    python tools\debug\debug.py ollama
 
 DEBUGGING TIPS:
     • Look for "DEBUG:" markers in output for troubleshooting
@@ -249,7 +249,7 @@ def main():
     if command == "query":
         if len(sys.argv) < 3:
             print("❌ Error: Query text required")
-            print("Usage: python debug.py query \"Your question here\"")
+            print("Usage: python tools\\debug\\debug.py query \"Your question here\"")
             sys.exit(1)
         query = " ".join(sys.argv[2:])
         asyncio.run(test_single_query(query))

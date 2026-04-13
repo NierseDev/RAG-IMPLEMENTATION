@@ -90,7 +90,7 @@ Open http://localhost:8000 in your browser and upload documents directly.
 
 #### Option B: Seed Sample Data
 ```bash
-python seed_sample.py
+python tools\debug\seed_sample.py
 ```
 
 #### Option C: Test with Python
@@ -870,16 +870,16 @@ All-in-one debugging tool for troubleshooting RAG system issues.
 
 ```bash
 # Test a single query with detailed debug output
-python debug.py query "What is Deep Q Learning?"
+python tools\debug\debug.py query "What is Deep Q Learning?"
 
 # Interactive mode for multiple queries
-python debug.py interactive
+python tools\debug\debug.py interactive
 
 # Test Ollama connection directly (isolate connection issues)
-python debug.py ollama
+python tools\debug\debug.py ollama
 
 # Show help
-python debug.py help
+python tools\debug\debug.py help
 ```
 
 **When to use:**
@@ -919,7 +919,7 @@ Tests the core agentic reasoning loop with predefined queries. Best for smoke te
 
 ### 🌱 Seed Sample Data
 ```bash
-python seed_sample.py
+python tools\debug\seed_sample.py
 ```
 Populates the database with sample documents for testing queries.
 
@@ -954,13 +954,13 @@ To get better APA citations, consider:
 
 ```bash
 # Test a single query with full debug output (RECOMMENDED)
-python debug.py query "Your question here"
+python tools\debug\debug.py query "Your question here"
 
 # Interactive debugging session
-python debug.py interactive
+python tools\debug\debug.py interactive
 
 # Test Ollama connection
-python debug.py ollama
+python tools\debug\debug.py ollama
 
 # Alternative: Test model directly via CLI
 ollama run llama3.1:8b "test"
