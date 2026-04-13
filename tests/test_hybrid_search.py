@@ -391,6 +391,6 @@ class TestHybridSearchAPI:
 
 
 if __name__ == "__main__":
-    # Run tests with: python -m pytest test_hybrid_search.py -v -s
+    # Run tests with: python -m pytest tests/test_hybrid_search.py -v -s
     logger.info("Hybrid Search Integration Tests")
-    logger.info("Run with: python -m pytest test_hybrid_search.py -v -s")
+    logger.info("Run with: python -m pytest tests/test_hybrid_search.py -v -s")

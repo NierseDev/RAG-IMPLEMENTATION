@@ -3,9 +3,9 @@ Upload Testing Tool for RAG System
 Tests document ingestion, batch upload, and duplicate handling.
 
 Usage:
-    python test_upload.py batch                    # Test batch upload
-    python test_upload.py duplicates               # Test duplicate handling modes
-    python test_upload.py all                      # Run all upload tests
+    python tests/test_upload.py batch                    # Test batch upload
+    python tests/test_upload.py duplicates               # Test duplicate handling modes
+    python tests/test_upload.py all                      # Run all upload tests
 """
 import requests
 import tempfile
@@ -245,10 +245,10 @@ def show_help():
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 USAGE:
-    python test_upload.py batch                    # Test batch upload
-    python test_upload.py duplicates               # Test duplicate handling modes
-    python test_upload.py all                      # Run all upload tests
-    python test_upload.py help                     # Show this help message
+    python tests/test_upload.py batch                    # Test batch upload
+    python tests/test_upload.py duplicates               # Test duplicate handling modes
+    python tests/test_upload.py all                      # Run all upload tests
+    python tests/test_upload.py help                     # Show this help message
 
 DESCRIPTION:
     Tests document ingestion functionality including:
@@ -264,13 +264,13 @@ PREREQUISITES:
 
 EXAMPLES:
     # Test batch upload only
-    python test_upload.py batch
+    python tests/test_upload.py batch
     
     # Test all duplicate handling modes
-    python test_upload.py duplicates
+    python tests/test_upload.py duplicates
     
     # Run full test suite
-    python test_upload.py all
+    python tests/test_upload.py all
 
 For more information, see README.MD - Multiple File Upload section.
     """)
