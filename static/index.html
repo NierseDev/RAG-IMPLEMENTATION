@@ -378,7 +378,7 @@
             reasoningTrace.innerHTML = '<p class="loading">Reasoning in progress...</p>';
             
             try {
-                const endpoint = mode === 'agentic' ? '/query' : '/query/simple';
+                const endpoint = mode === 'agentic' ? '/query/agentic' : '/query/simple';
                 const payload = {
                     query: query,
                     top_k: topK

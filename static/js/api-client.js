@@ -348,7 +348,7 @@ class APIClient {
     };
 
     const timeout = options.timeout || 60000;
-    return this.post('/query', body, { timeout });
+    return this.post('/query/agentic', body, { timeout });
   }
 
   /**
@@ -383,14 +383,11 @@ class APIClient {
    * const sessionId = result.session.id;
    */
   async createChatSession(title) {
-    const params = new URLSearchParams();
-    if (title) params.append('title', title);
+    const result = await this.post('/query/sessions', title ? { title } : {});
     
-    const url = `/query/sessions${params.toString() ? `?${params}` : ''}`;
-    const result = await this.post(url, {});
-    
-    if (result.success && result.session) {
-      this.setSessionId(result.session.id);
+    if (result.success) {
+      const sessionId = result.session_id || result.session?.session_id || result.session?.id;
+      if (sessionId) this.setSessionId(sessionId);
     }
     
     return result;
@@ -769,7 +766,7 @@ class APIClient {
    * const results = await client.batch([
    *   { method: 'get', endpoint: '/health' },
    *   { method: 'get', endpoint: '/stats' },
-   *   { method: 'post', endpoint: '/query', body: { query: '...' } }
+   *   { method: 'post', endpoint: '/query/agentic', body: { query: '...' } }
    * ]);
    */
   async batch(calls, options = {}) {

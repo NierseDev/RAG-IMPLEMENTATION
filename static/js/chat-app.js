@@ -63,14 +63,18 @@ class ChatApp {
     async loadSessions() {
         try {
             const response = await fetch('/query/sessions');
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `HTTP ${response.status}`);
+            }
             const data = await response.json();
-            
-            this.sessions = data.sessions || [];
+
+            this.sessions = (data.sessions || []).map(session => this.normalizeSession(session));
             this.renderSessions();
             
             // Load most recent session if available
             if (this.sessions.length > 0 && !this.currentSessionId) {
-                await this.loadSession(this.sessions[0].session_id);
+                await this.loadSession(this.sessions[0].id);
             }
         } catch (error) {
             console.error('Failed to load sessions:', error);
@@ -85,8 +89,8 @@ class ChatApp {
         }
 
         this.chatHistoryEl.innerHTML = this.sessions.map(session => `
-            <div class="chat-item ${session.session_id === this.currentSessionId ? 'active' : ''}" 
-                 data-session-id="${session.session_id}">
+            <div class="chat-item ${session.id === this.currentSessionId ? 'active' : ''}" 
+                 data-session-id="${session.id}">
                 <div class="chat-item-title">${this.escapeHtml(session.title)}</div>
                 <div class="chat-item-date">${this.formatDate(session.created_at)}</div>
             </div>
@@ -108,25 +112,38 @@ class ChatApp {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ title: 'New Chat' })
             });
-            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `HTTP ${response.status}`);
+            }
             const data = await response.json();
-            this.currentSessionId = data.session_id;
+            const sessionId = this.extractSessionId(data.session || data);
+            if (!sessionId) {
+                throw new Error('Session ID missing from create session response');
+            }
+            this.currentSessionId = sessionId;
             
             await this.loadSessions();
             this.clearChat();
             this.chatInputEl.focus();
+            return true;
         } catch (error) {
             console.error('Failed to create session:', error);
             this.showError('Failed to create new chat');
+            return false;
         }
     }
 
     async loadSession(sessionId) {
         try {
             const response = await fetch(`/query/sessions/${sessionId}`);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `HTTP ${response.status}`);
+            }
             const data = await response.json();
             
-            this.currentSessionId = sessionId;
+            this.currentSessionId = Number(sessionId);
             this.messages = data.messages || [];
             this.renderMessages();
             this.renderSessions(); // Re-render to update active state
@@ -140,7 +157,11 @@ class ChatApp {
         if (!confirm('Delete this chat session?')) return;
         
         try {
-            await fetch(`/query/sessions/${sessionId}`, { method: 'DELETE' });
+            const response = await fetch(`/query/sessions/${sessionId}`, { method: 'DELETE' });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `HTTP ${response.status}`);
+            }
             
             if (this.currentSessionId === sessionId) {
                 this.currentSessionId = null;
@@ -162,7 +183,11 @@ class ChatApp {
 
         // Create session if needed
         if (!this.currentSessionId) {
-            await this.createNewSession();
+            const created = await this.createNewSession();
+            if (!created || !this.currentSessionId) {
+                this.showError('Unable to initialize chat session');
+                return;
+            }
         }
 
         this.isProcessing = true;
@@ -186,8 +211,13 @@ class ChatApp {
                     session_id: this.currentSessionId
                 })
             });
-
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.detail || `Request failed with status ${response.status}`);
+            }
+            if (!data.answer) {
+                throw new Error('Empty response from agentic endpoint');
+            }
 
             // Remove loading message
             this.removeMessage(loadingId);
@@ -209,8 +239,9 @@ class ChatApp {
         } catch (error) {
             console.error('Failed to send message:', error);
             this.removeMessage(loadingId);
-            this.addMessage('assistant', '❌ Failed to process query. Please try again.');
-            this.showError('Failed to send message');
+            const errorMessage = error?.message || 'Unknown error';
+            this.addMessage('assistant', `❌ Failed to process query: ${errorMessage}`);
+            this.showError(`Failed to send message: ${errorMessage}`);
         } finally {
             this.isProcessing = false;
             this.sendBtn.disabled = false;
@@ -369,25 +400,30 @@ class ChatApp {
         const section = document.querySelector('.debug-section:nth-child(1)');
         if (!section) return;
 
+        const isOnline = data?.status === 'online' || data?.status === 'healthy' || data?.healthy === true;
+        const llmModel = data?.llm?.model || data?.llm_model || 'N/A';
+        const embeddingModel = data?.embeddings?.model || data?.embedding_model || 'N/A';
+        const maxIterations = data?.configuration?.max_iterations || data?.max_iterations || 'N/A';
+
         section.innerHTML = `
             <h3>Agent Status</h3>
             <div class="debug-item">
                 <span class="debug-label">Status:</span>
-                <span class="status-badge ${data.healthy ? 'status-online' : 'status-offline'}">
-                    ${data.healthy ? 'Online' : 'Offline'}
+                <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
+                    ${isOnline ? 'Online' : 'Offline'}
                 </span>
             </div>
             <div class="debug-item">
                 <span class="debug-label">LLM Model:</span>
-                <span class="debug-value">${data.llm_model || 'N/A'}</span>
+                <span class="debug-value">${llmModel}</span>
             </div>
             <div class="debug-item">
                 <span class="debug-label">Embeddings:</span>
-                <span class="debug-value">${data.embedding_model || 'N/A'}</span>
+                <span class="debug-value">${embeddingModel}</span>
             </div>
             <div class="debug-item">
                 <span class="debug-label">Max Iterations:</span>
-                <span class="debug-value">${data.max_iterations || 'N/A'}</span>
+                <span class="debug-value">${maxIterations}</span>
             </div>
         `;
     }
@@ -398,30 +434,35 @@ class ChatApp {
 
         const stats = data.statistics || {};
         const docStats = stats.document_status || {};
+        const connected = data?.status === 'connected' || data?.healthy === true;
+        const totalChunks = data?.chunks?.total ?? stats.total_chunks ?? 0;
+        const totalDocuments = data?.documents?.total ?? stats.total_documents ?? 0;
+        const completed = data?.documents?.by_status?.completed ?? docStats.completed ?? 0;
+        const processing = data?.documents?.by_status?.processing ?? docStats.processing ?? 0;
 
         section.innerHTML = `
             <h3>Database Status</h3>
             <div class="debug-item">
                 <span class="debug-label">Connection:</span>
-                <span class="status-badge ${data.healthy ? 'status-online' : 'status-offline'}">
-                    ${data.healthy ? 'Connected' : 'Disconnected'}
+                <span class="status-badge ${connected ? 'status-online' : 'status-offline'}">
+                    ${connected ? 'Connected' : 'Disconnected'}
                 </span>
             </div>
             <div class="debug-item">
                 <span class="debug-label">Total Chunks:</span>
-                <span class="debug-value">${stats.total_chunks || 0}</span>
+                <span class="debug-value">${totalChunks}</span>
             </div>
             <div class="debug-item">
                 <span class="debug-label">Documents:</span>
-                <span class="debug-value">${stats.total_documents || 0}</span>
+                <span class="debug-value">${totalDocuments}</span>
             </div>
             <div class="debug-item">
                 <span class="debug-label">Completed:</span>
-                <span class="debug-value">${docStats.completed || 0}</span>
+                <span class="debug-value">${completed}</span>
             </div>
             <div class="debug-item">
                 <span class="debug-label">Processing:</span>
-                <span class="debug-value">${docStats.processing || 0}</span>
+                <span class="debug-value">${processing}</span>
             </div>
         `;
     }
@@ -434,8 +475,8 @@ class ChatApp {
 
         this.reasoningTraceEl.innerHTML = trace.map((step, idx) => `
             <div class="reasoning-step">
-                <div class="reasoning-step-type">Step ${idx + 1}: ${this.escapeHtml(step.phase || step.type || 'Unknown')}</div>
-                <div class="reasoning-step-content">${this.escapeHtml(step.content || step.description || '')}</div>
+                <div class="reasoning-step-type">Step ${idx + 1}: ${this.escapeHtml(typeof step === 'string' ? 'Reasoning' : (step.phase || step.type || 'Unknown'))}</div>
+                <div class="reasoning-step-content">${this.escapeHtml(typeof step === 'string' ? step : (step.content || step.description || ''))}</div>
             </div>
         `).join('');
     }
@@ -444,7 +485,7 @@ class ChatApp {
         const section = document.querySelector('.debug-section:nth-child(4)');
         if (!section) return;
 
-        const iterations = data.iterations_used || 0;
+        const iterations = data.iterations || data.iterations_used || 0;
         const retrieved = (data.sources || []).length;
         const confidence = data.confidence ? (data.confidence * 100).toFixed(1) + '%' : 'N/A';
         const duration = data.processing_time ? data.processing_time.toFixed(2) + 's' : 'N/A';
@@ -499,6 +540,16 @@ class ChatApp {
         } else {
             alert(message);
         }
+    }
+
+    extractSessionId(sessionLike) {
+        if (!sessionLike || typeof sessionLike !== 'object') return null;
+        return Number(sessionLike.session_id ?? sessionLike.id ?? null) || null;
+    }
+
+    normalizeSession(session) {
+        const id = this.extractSessionId(session);
+        return { ...session, id, session_id: id };
     }
 }
 

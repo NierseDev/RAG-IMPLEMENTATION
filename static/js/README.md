@@ -506,8 +506,8 @@ const [health, stats, documents] = await client.batch([
 // Execute in sequence
 const results = await client.batch(
     [
-        { method: 'post', endpoint: '/query', body: { query: 'Q1' } },
-        { method: 'post', endpoint: '/query', body: { query: 'Q2' } }
+        { method: 'post', endpoint: '/query/agentic', body: { query: 'Q1' } },
+        { method: 'post', endpoint: '/query/agentic', body: { query: 'Q2' } }
     ],
     { parallel: false }
 )

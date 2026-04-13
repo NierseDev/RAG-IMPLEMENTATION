@@ -95,7 +95,7 @@ python seed_sample.py
 
 #### Option C: Test with Python
 ```bash
-python test_agent.py
+python tests/test_agent.py
 ```
 
 #### Option D: Use cURL
@@ -893,16 +893,16 @@ Consolidated tool for testing document ingestion functionality.
 
 ```bash
 # Test batch file upload
-python test_upload.py batch
+python tests/test_upload.py batch
 
 # Test duplicate handling (skip, replace, append modes)
-python test_upload.py duplicates
+python tests/test_upload.py duplicates
 
 # Run all upload tests
-python test_upload.py all
+python tests/test_upload.py all
 
 # Show help
-python test_upload.py help
+python tests/test_upload.py help
 ```
 
 **Tests included:**
@@ -913,7 +913,7 @@ python test_upload.py help
 
 ### 🤖 Agent Testing
 ```bash
-python test_agent.py
+python tests/test_agent.py
 ```
 Tests the core agentic reasoning loop with predefined queries. Best for smoke testing after code changes.
 

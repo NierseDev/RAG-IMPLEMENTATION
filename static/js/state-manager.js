@@ -386,6 +386,10 @@ class StateManager {
             try {
                 this.setState('chat.loadingQuery', true);
                 const response = await fetch('/query/sessions');
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `HTTP ${response.status}`);
+                }
                 const data = await response.json();
                 this.setState('chat.sessionList', data.sessions || []);
             } catch (error) {
@@ -403,10 +407,15 @@ class StateManager {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ title })
                 });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `HTTP ${response.status}`);
+                }
                 const data = await response.json();
-                this.setState('chat.currentSession', data.session_id);
+                const sessionId = data.session_id || data.session?.session_id || data.session?.id || null;
+                this.setState('chat.currentSession', sessionId);
                 await this.dispatch('loadSessions');
-                return data.session_id;
+                return sessionId;
             } catch (error) {
                 console.error('Failed to create session:', error);
                 throw error;
@@ -430,6 +439,10 @@ class StateManager {
                     })
                 });
 
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `HTTP ${response.status}`);
+                }
                 const data = await response.json();
                 
                 this.setState({
@@ -517,15 +530,18 @@ class StateManager {
                     fetch('/database/status')
                 ]);
 
+                if (!agentRes.ok || !dbRes.ok) {
+                    throw new Error(`Status refresh failed: agent=${agentRes.status}, db=${dbRes.status}`);
+                }
                 const agentData = await agentRes.json();
                 const dbData = await dbRes.json();
 
                 this.setState({
                     'debug.systemStatus': {
-                        agentHealthy: agentData.healthy,
-                        dbHealthy: dbData.healthy,
-                        llmModel: agentData.llm_model,
-                        embeddingModel: agentData.embedding_model
+                        agentHealthy: agentData.status === 'online' || agentData.status === 'healthy' || agentData.healthy === true,
+                        dbHealthy: dbData.status === 'connected' || dbData.healthy === true,
+                        llmModel: agentData.llm?.model || agentData.llm_model || null,
+                        embeddingModel: agentData.embeddings?.model || agentData.embedding_model || null
                     },
                     'debug.agentStatus': agentData
                 });

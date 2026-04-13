@@ -408,14 +408,14 @@ client.addErrorInterceptor(async (error) => {
 const results = await client.batch([
     { method: 'get', endpoint: '/health' },
     { method: 'get', endpoint: '/stats' },
-    { method: 'post', endpoint: '/query', body: { query: 'Your question' } }
+    { method: 'post', endpoint: '/query/agentic', body: { query: 'Your question' } }
 ]);
 
 // Sequential execution
 const results = await client.batch(
     [
-        { method: 'post', endpoint: '/query', body: { query: 'Q1' } },
-        { method: 'post', endpoint: '/query', body: { query: 'Q2' } }
+        { method: 'post', endpoint: '/query/agentic', body: { query: 'Q1' } },
+        { method: 'post', endpoint: '/query/agentic', body: { query: 'Q2' } }
     ],
     { parallel: false }
 );</code></pre>
