@@ -10,6 +10,7 @@ from app.models.entities import RetrievalResult
 from app.core.config import settings
 from app.core.text_utils import estimate_tokens, safe_truncate_chunks
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -236,15 +237,23 @@ class RetrievalService:
         # Use configured max or default
         max_tokens = max_tokens or settings.max_context_tokens
         
-        # Format each result with APA-friendly citations
+        # Format each result with explicit structure to reduce prompt ambiguity
         context_parts = []
         for idx, result in enumerate(results, 1):
-            # Extract potential author/year from source filename
-            source_name = result.source.replace('.pdf', '').replace('_', ' ')
-            
-            # Format: [Source #: Filename] Content
-            # The LLM will use this to create proper APA citations
-            part = f"[Source {idx}: {result.source} (similarity: {result.similarity:.3f})]\n{result.text}\n"
+            page_hint = self._extract_page_hint(result.chunk_id)
+            created_at = result.created_at.isoformat() if result.created_at else "unknown"
+            page_line = f"- Page Hint: {page_hint}\n" if page_hint else ""
+
+            part = (
+                f"=== Source {idx} ===\n"
+                f"- Source: {result.source}\n"
+                f"- Chunk ID: {result.chunk_id}\n"
+                f"- Similarity Score: {result.similarity:.3f}\n"
+                f"- Created At: {created_at}\n"
+                f"{page_line}"
+                f"Content:\n{result.text}\n"
+                f"=== End Source {idx} ===\n"
+            )
             context_parts.append(part)
         
         # Check total token count
@@ -252,7 +261,7 @@ class RetrievalService:
         total_tokens = estimate_tokens(full_context)
         
         if total_tokens <= max_tokens:
-            return full_context
+            return f"{full_context}\nEND OF CONTEXT"
         
         # Need to truncate - keep most relevant chunks
         logger.warning(f"Context ({total_tokens} tokens) exceeds limit ({max_tokens}). Truncating.")
@@ -260,9 +269,23 @@ class RetrievalService:
         # Truncate to fit
         truncated_parts = safe_truncate_chunks(context_parts, max_tokens)
         truncated_context = "\n".join(truncated_parts)
+        truncated_context = f"{truncated_context}\n[Context truncated to fit token limit]\nEND OF CONTEXT"
         
         logger.info(f"Truncated context from {len(context_parts)} to {len(truncated_parts)} chunks")
         return truncated_context
+
+    def _extract_page_hint(self, chunk_id: str) -> Optional[str]:
+        """Extract a page hint from chunk_id when present."""
+        patterns = [
+            r'page[_\- ]?(\d+)',
+            r'\bp[_\- ]?(\d+)\b',
+            r'chunk[_\- ]?\d+[_\- ]?(\d+)$'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, chunk_id.lower())
+            if match:
+                return match.group(1)
+        return None
     
     def extract_sources(self, results: List[RetrievalResult]) -> List[str]:
         """Extract unique sources from results."""

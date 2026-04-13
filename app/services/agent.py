@@ -6,6 +6,7 @@ Integration: Workflow Orchestrator (Sprint 4, Group 3, Task 2)
 """
 from typing import Optional, Dict, Any, List, Tuple
 import time
+from datetime import datetime, timezone
 from app.models.entities import AgentState, RetrievalResult
 from app.services.llm import llm_service
 from app.services.retrieval import retrieval_service
@@ -208,7 +209,11 @@ class AgenticRAG:
                 logger.info(f"Routing decision: {routing_decision.query_type.value} (confidence: {routing_decision.confidence:.2f})")
             
             prompt = llm_service.create_plan_prompt(state.current_query)
-            plan = await llm_service.generate(prompt, temperature=0.5, max_tokens=200)
+            plan = await llm_service.generate(
+                prompt,
+                temperature=0.5,
+                max_tokens=llm_service.get_phase_max_tokens("plan", 200)
+            )
             return plan.strip()
         except Exception as e:
             logger.error(f"Error in plan phase: {e}")
@@ -222,7 +227,7 @@ class AgenticRAG:
         metadata_filters: Optional[Dict[str, Any]] = None,
         filter_logic: str = "AND"
     ) -> list[RetrievalResult]:
-        """Phase 2: Execute retrieval with optional tool usage."""
+        """Phase 2: Execute retrieval with optional web-context enrichment."""
         try:
             # Standard RAG retrieval with metadata filters (Sprint 4)
             results = await retrieval_service.retrieve(
@@ -232,25 +237,66 @@ class AgenticRAG:
                 metadata_filters=metadata_filters,
                 filter_logic=filter_logic
             )
-            
-            # Check if we should use web search as fallback
+
+            # Enrich retrieved context with web search when local context is weak
             if self.enable_tools and self.web_search_tool:
-                should_fallback = self.web_search_tool.should_fallback_to_web(
+                should_enrich = self.web_search_tool.should_fallback_to_web(
                     rag_confidence=state.confidence or 0.0,
                     rag_results_count=len(results)
                 )
-                
-                if should_fallback and state.iteration == self.max_iterations:
-                    # Last iteration - try web search
-                    logger.info("Using web search as fallback")
-                    web_results = await self.web_search_tool.execute(state.current_query)
-                    if web_results.get('success'):
-                        state.add_reasoning("WEB_SEARCH", f"Found {len(web_results.get('results', []))} web results")
-            
+
+                if should_enrich:
+                    logger.info("Using web search to enrich retrieval context")
+                    web_response = await self.web_search_tool.execute(state.current_query, max_results=3)
+                    if web_response.get('success'):
+                        web_results = web_response.get('results', [])
+                        web_context_docs = self._web_results_to_retrieval_results(web_results, state.iteration)
+                        if web_context_docs:
+                            results.extend(web_context_docs)
+                            state.add_reasoning(
+                                "WEB_SEARCH",
+                                f"Added {len(web_context_docs)} web context snippets for supplemental evidence"
+                            )
+                    else:
+                        error = web_response.get('error', 'unknown web search error')
+                        state.add_reasoning("WEB_SEARCH", f"Web context enrichment unavailable: {error}")
+
             return results
         except Exception as e:
             logger.error(f"Error in retrieve phase: {e}")
             return []
+
+    def _web_results_to_retrieval_results(
+        self,
+        web_results: List[Dict[str, Any]],
+        iteration: int
+    ) -> List[RetrievalResult]:
+        """Convert web search results into retrieval-style chunks for downstream phases."""
+        transformed: List[RetrievalResult] = []
+
+        for idx, item in enumerate(web_results, 1):
+            snippet = (item.get('snippet') or '').strip()
+            if not snippet:
+                continue
+
+            title = (item.get('title') or 'Web Result').strip()
+            url = (item.get('url') or '').strip()
+            source = (item.get('source') or 'DuckDuckGo').strip()
+            text = f"{title}\n{snippet}\nURL: {url}" if url else f"{title}\n{snippet}"
+
+            transformed.append(
+                RetrievalResult(
+                    chunk_id=f"web_{iteration}_{idx}",
+                    source=f"web:{source}",
+                    ai_provider="web_search",
+                    embedding_model="duckduckgo",
+                    text=text,
+                    similarity=0.55,
+                    created_at=datetime.now(timezone.utc)
+                )
+            )
+
+        return transformed
     
     async def _reason_phase(self, state: AgentState) -> str:
         """Phase 3: Reason about retrieved information."""
@@ -259,10 +305,14 @@ class AgenticRAG:
             recent_docs = state.retrieved_docs[-settings.max_context_chunks:]
             context = retrieval_service.format_context(
                 recent_docs, 
-                max_tokens=settings.max_context_tokens // 2  # Reserve space for prompt
+                max_tokens=settings.max_context_tokens // 3
             )
             prompt = llm_service.create_reason_prompt(state.current_query, context)
-            reasoning = await llm_service.generate(prompt, temperature=0.5, max_tokens=300)
+            reasoning = await llm_service.generate(
+                prompt,
+                temperature=0.5,
+                max_tokens=llm_service.get_phase_max_tokens("reason", 300)
+            )
             return reasoning.strip()
         except Exception as e:
             logger.error(f"Error in reason phase: {e}")
@@ -271,14 +321,19 @@ class AgenticRAG:
     async def _answer_phase(self, state: AgentState) -> str:
         """Phase 4: Generate answer from retrieved information."""
         try:
-            # Use most relevant recent documents, limited by config
+            # Context is structured with explicit source blocks and END OF CONTEXT marker
+            # to make source attribution and parsing clearer for the LLM.
             recent_docs = state.retrieved_docs[-settings.max_context_chunks:]
             context = retrieval_service.format_context(
                 recent_docs,
-                max_tokens=settings.max_context_tokens // 2  # Reserve space for system and query
+                max_tokens=settings.max_context_tokens // 3
             )
             prompt = llm_service.create_answer_prompt(state.original_query, context)
-            answer = await llm_service.generate(prompt, temperature=0.7, max_tokens=500)
+            answer = await llm_service.generate(
+                prompt,
+                temperature=0.7,
+                max_tokens=llm_service.get_phase_max_tokens("answer", 500)
+            )
             return answer.strip()
         except Exception as e:
             logger.error(f"Error in answer phase: {e}")
@@ -345,7 +400,11 @@ class AgenticRAG:
         try:
             reasoning_summary = state.reasoning[-1] if state.reasoning else "No results found"
             prompt = llm_service.create_refine_query_prompt(state.original_query, reasoning_summary)
-            refined = await llm_service.generate(prompt, temperature=0.5, max_tokens=100)
+            refined = await llm_service.generate(
+                prompt,
+                temperature=0.5,
+                max_tokens=llm_service.get_phase_max_tokens("refine", 100)
+            )
             return refined.strip()
         except Exception as e:
             logger.error(f"Error refining query: {e}")

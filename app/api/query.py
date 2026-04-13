@@ -4,7 +4,13 @@ Query endpoints for agentic RAG.
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional, Dict, Any
 import time
-from app.models.requests import QueryRequest, SimpleQueryRequest, HybridSearchRequest
+from app.models.requests import (
+    QueryRequest,
+    SimpleQueryRequest,
+    HybridSearchRequest,
+    ChatSessionCreateRequest,
+    ChatSessionUpdateRequest
+)
 from app.models.responses import AgentResponse, SimpleRAGResponse, HybridSearchResponse
 from app.services.agent import create_agent
 from app.services.retrieval import retrieval_service
@@ -16,6 +22,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/query", tags=["Query"])
+
+
+def _normalize_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Add session_id alias for frontend compatibility."""
+    normalized = dict(session)
+    if 'session_id' not in normalized and 'id' in normalized:
+        normalized['session_id'] = normalized['id']
+    return normalized
 
 
 @router.post("/agentic", response_model=AgentResponse)
@@ -94,8 +108,7 @@ async def agentic_query(request: QueryRequest):
                 'timestamp': processing_time
             })
         
-        # Sprint 3: Enhanced response with detailed trace data
-        return AgentResponse(
+        response_payload = AgentResponse(
             query=state.original_query,
             answer=answer_text,
             confidence=state.confidence,
@@ -111,6 +124,30 @@ async def agentic_query(request: QueryRequest):
             agent_steps=agent_steps,
             tool_calls=[]  # TODO: Track tool calls from agent
         )
+
+        # Best-effort message persistence for session-backed chat UIs.
+        if request.session_id:
+            try:
+                client = get_supabase_client()
+                client.table('chat_messages').insert([
+                    {
+                        "session_id": request.session_id,
+                        "role": "user",
+                        "content": request.query
+                    },
+                    {
+                        "session_id": request.session_id,
+                        "role": "assistant",
+                        "content": answer_text
+                    }
+                ]).execute()
+            except Exception as persistence_error:
+                logger.warning(
+                    f"Could not persist chat messages for session {request.session_id}: {persistence_error}"
+                )
+
+        # Sprint 3: Enhanced response with detailed trace data
+        return response_payload
     
     except Exception as e:
         logger.error(f"Error in agentic query: {e}")
@@ -231,27 +268,30 @@ async def hybrid_search(request: HybridSearchRequest):
 # ============================================================================
 
 @router.post("/sessions")
-async def create_chat_session(title: Optional[str] = None):
+async def create_chat_session(payload: Optional[ChatSessionCreateRequest] = None):
     """Create a new chat session."""
     try:
         client = get_supabase_client()
-        
+        title = payload.title if payload and payload.title else "New Chat"
+
         session_data = {
-            "title": title or "New Chat",
-            "created_at": "now()",
-            "updated_at": "now()"
+            "title": title
         }
-        
+
         result = client.table('chat_sessions').insert(session_data).execute()
-        
+
         if result.data:
+            session = _normalize_session(result.data[0])
             return {
                 "success": True,
-                "session": result.data[0]
+                "session_id": session["session_id"],
+                "session": session
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to create session")
-            
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating chat session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -270,10 +310,11 @@ async def list_chat_sessions(limit: int = 50, offset: int = 0):
             .offset(offset) \
             .execute()
         
+        sessions = [_normalize_session(session) for session in (result.data or [])]
         return {
             "success": True,
-            "sessions": result.data,
-            "count": len(result.data)
+            "sessions": sessions,
+            "count": len(sessions)
         }
         
     except Exception as e:
@@ -303,9 +344,11 @@ async def get_chat_session(session_id: int):
             .order('created_at', desc=False) \
             .execute()
         
+        session = _normalize_session(session_result.data[0])
         return {
             "success": True,
-            "session": session_result.data[0],
+            "session_id": session["session_id"],
+            "session": session,
             "messages": messages_result.data
         }
         
@@ -313,6 +356,33 @@ async def get_chat_session(session_id: int):
         raise
     except Exception as e:
         logger.error(f"Error getting chat session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/sessions/{session_id}")
+async def update_chat_session(session_id: int, payload: ChatSessionUpdateRequest):
+    """Update chat session metadata."""
+    try:
+        client = get_supabase_client()
+
+        result = client.table('chat_sessions') \
+            .update({"title": payload.title}) \
+            .eq('id', session_id) \
+            .execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        session = _normalize_session(result.data[0])
+        return {
+            "success": True,
+            "session_id": session["session_id"],
+            "session": session
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating chat session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

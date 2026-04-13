@@ -31,7 +31,7 @@ class VerificationService:
             
             # Ensure context fits within limits
             context_tokens = estimate_tokens(context)
-            max_context_tokens = settings.max_context_tokens // 3  # Reserve space for query and answer
+            max_context_tokens = settings.max_context_tokens // 4
             
             if context_tokens > max_context_tokens:
                 logger.warning(f"Verification context ({context_tokens} tokens) exceeds limit. Truncating.")
@@ -42,7 +42,7 @@ class VerificationService:
             verification_result = await llm_service.generate(
                 verification_prompt,
                 temperature=0.3,  # Low temperature for consistency
-                max_tokens=300
+                max_tokens=llm_service.get_phase_max_tokens("verify", 300)
             )
             
             # DEBUG: Log raw LLM response
@@ -117,49 +117,60 @@ class VerificationService:
             'confidence': 0.5,
             'issues': []
         }
-        
+
         logger.info("DEBUG: Starting verification parsing...")
-        
-        # Parse verified status
-        verified_match = re.search(r'verified:\s*(yes|true)', verification_text.lower())
-        if verified_match:
+        text = verification_text.strip()
+        lowered = text.lower()
+
+        # Parse verified status (supports both legacy and new formats)
+        verified_true_patterns = [
+            r'verified\s*:\s*(yes|true)',
+            r'verified\s*:\s*verified',
+            r'verdict\s*:\s*(yes|true|verified)'
+        ]
+        verified_false_patterns = [
+            r'verified\s*:\s*(no|false)',
+            r'verified\s*:\s*not\s*verified',
+            r'verdict\s*:\s*(no|false|not\s*verified)'
+        ]
+
+        if any(re.search(pattern, lowered) for pattern in verified_true_patterns):
             result['verified'] = True
-            logger.info(f"DEBUG: Found verified status: True (matched: '{verified_match.group(0)}')")
-        else:
-            logger.info("DEBUG: Verified status not found or False")
-        
-        # Parse confidence - try multiple patterns
-        confidence_match = re.search(r'confidence:\s*([0-9.]+)', verification_text.lower())
-        if confidence_match:
-            try:
-                result['confidence'] = float(confidence_match.group(1))
-                logger.info(f"DEBUG: Confidence extracted: {result['confidence']} (matched: '{confidence_match.group(0)}')")
-            except ValueError as e:
-                logger.error(f"DEBUG: Failed to parse confidence value '{confidence_match.group(1)}': {e}")
-        else:
-            logger.warning(f"DEBUG: No confidence pattern matched! Using default: {result['confidence']}")
-            # Try alternative patterns
-            alt_patterns = [
-                r'confidence[:\s]+([0-9.]+)',
-                r'confidence level[:\s]+([0-9.]+)',
-                r'([0-9.]+)\s*confidence',
-            ]
-            for pattern in alt_patterns:
-                alt_match = re.search(pattern, verification_text.lower())
-                if alt_match:
-                    try:
-                        result['confidence'] = float(alt_match.group(1))
-                        logger.info(f"DEBUG: Confidence extracted via alternative pattern: {result['confidence']} (pattern: {pattern})")
-                        break
-                    except ValueError:
-                        continue
-        
-        # Parse issues
-        issues_match = re.search(r'issues?:(.*?)(?:\n\n|\Z)', verification_text, re.DOTALL | re.IGNORECASE)
+            logger.info("DEBUG: Parsed verified=True")
+        elif any(re.search(pattern, lowered) for pattern in verified_false_patterns):
+            result['verified'] = False
+            logger.info("DEBUG: Parsed verified=False")
+
+        # Parse confidence (supports "Confidence:" and "Confidence score:")
+        confidence_patterns = [
+            r'confidence(?:\s*score|\s*level)?\s*:\s*([01](?:\.\d+)?)',
+            r'confidence\s*=\s*([01](?:\.\d+)?)',
+            r'([01](?:\.\d+)?)\s*confidence'
+        ]
+        for pattern in confidence_patterns:
+            confidence_match = re.search(pattern, lowered)
+            if confidence_match:
+                try:
+                    parsed_confidence = float(confidence_match.group(1))
+                    result['confidence'] = max(0.0, min(1.0, parsed_confidence))
+                    logger.info(f"DEBUG: Confidence extracted: {result['confidence']}")
+                    break
+                except ValueError:
+                    continue
+
+        # Parse issues block
+        issues_match = re.search(
+            r'issues?\s*:\s*(.*?)(?:\n[A-Za-z][A-Za-z ]*:\s*|\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
         if issues_match:
             issues_text = issues_match.group(1).strip()
-            if issues_text and issues_text.lower() not in ['none', 'no issues', '[]']:
-                result['issues'] = [issues_text]
+            if issues_text and issues_text.lower() not in ['none', 'no issues', '[]', '- none']:
+                issue_lines = [line.strip("-• \t") for line in issues_text.splitlines() if line.strip()]
+                normalized = [line for line in issue_lines if line.lower() not in ['none', 'no issues', '[]']]
+                if normalized:
+                    result['issues'] = normalized
         
         return result
     
@@ -193,12 +204,38 @@ class VerificationService:
         return len(gaps) > 0, gaps
     
     def _format_context(self, results: List[RetrievalResult]) -> str:
-        """Format results into context string with length awareness."""
+        """Format results into a clear, structured context string."""
         if not results:
             return ""
-        
-        parts = [f"[{result.source}] {result.text}" for result in results]
-        return "\n\n".join(parts)
+
+        parts = []
+        for idx, result in enumerate(results, 1):
+            page_hint = self._extract_page_hint(result.chunk_id)
+            page_line = f"- Page Hint: {page_hint}\n" if page_hint else ""
+            parts.append(
+                f"=== Source {idx} ===\n"
+                f"- Source: {result.source}\n"
+                f"- Chunk ID: {result.chunk_id}\n"
+                f"- Similarity Score: {result.similarity:.3f}\n"
+                f"{page_line}"
+                f"Content:\n{result.text}\n"
+                f"=== End Source {idx} ==="
+            )
+        return "\n\n".join(parts) + "\n\nEND OF CONTEXT"
+
+    def _extract_page_hint(self, chunk_id: str) -> str:
+        """Extract page hint from chunk identifier when available."""
+        patterns = [
+            r'page[_\- ]?(\d+)',
+            r'\bp[_\- ]?(\d+)\b',
+            r'chunk[_\- ]?\d+[_\- ]?(\d+)$'
+        ]
+        lowered = chunk_id.lower()
+        for pattern in patterns:
+            match = re.search(pattern, lowered)
+            if match:
+                return match.group(1)
+        return ""
 
 
 # Global verification service instance

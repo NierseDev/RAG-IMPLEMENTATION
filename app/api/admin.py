@@ -108,14 +108,14 @@ async def get_agent_status():
             "status": "online" if (llm_status and embed_status) else "degraded",
             "llm": {
                 "available": llm_status,
-                "model": settings.ollama_llm_model,
-                "provider": "ollama"
+                "model": settings.current_llm_model,
+                "provider": settings.ai_provider
             },
             "embeddings": {
                 "available": embed_status,
-                "model": settings.ollama_embed_model,
-                "provider": "ollama",
-                "dimensions": 1024  # mxbai-embed-large
+                "model": settings.current_embedding_model,
+                "provider": settings.embedding_provider,
+                "dimensions": settings.embedding_dimensions
             },
             "configuration": {
                 "max_iterations": settings.max_agent_iterations,

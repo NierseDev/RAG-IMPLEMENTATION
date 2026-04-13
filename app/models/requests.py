@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class QueryRequest(BaseModel):
     """Request for querying the agentic RAG system."""
     query: str = Field(..., min_length=1, description="User question")
+    session_id: Optional[int] = Field(None, ge=1, description="Optional chat session ID for persistence")
     filter_source: Optional[str] = Field(None, description="Filter by document source")
     filter_provider: Optional[str] = Field(None, description="Filter by AI provider")
     filter_model: Optional[str] = Field(None, description="Filter by embedding model")
@@ -45,3 +46,12 @@ class HybridSearchRequest(BaseModel):
     use_hybrid: Optional[bool] = Field(None, description="Force hybrid or vector-only search")
     min_similarity: Optional[float] = Field(None, ge=0.0, le=1.0, description="Minimum similarity threshold")
 
+
+class ChatSessionCreateRequest(BaseModel):
+    """Request payload to create a chat session."""
+    title: Optional[str] = Field(None, min_length=1, max_length=200, description="Session title")
+
+
+class ChatSessionUpdateRequest(BaseModel):
+    """Request payload to update an existing chat session."""
+    title: str = Field(..., min_length=1, max_length=200, description="Updated session title")

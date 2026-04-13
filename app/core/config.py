@@ -24,9 +24,9 @@ class Settings(BaseSettings):
     # ============================================================================
     # AI Provider Configuration
     # ============================================================================
-    ai_provider: Literal["ollama", "openai", "anthropic", "google", "groq"] = Field(
+    ai_provider: Literal["ollama", "openrouter"] = Field(
         default="ollama",
-        description="AI provider to use: ollama (local), openai, anthropic, google, groq"
+        description="AI provider to use: ollama (local) or openrouter (cloud)"
     )
     
     # Ollama Configuration (Local)
@@ -35,17 +35,20 @@ class Settings(BaseSettings):
     ollama_embed_model: str = Field(default="mxbai-embed-large", description="Ollama embedding model")
     ollama_timeout: int = Field(default=300, description="Ollama API timeout in seconds")
     
-    # Cloud Provider API Keys
-    openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
-    anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
-    google_api_key: Optional[str] = Field(default=None, description="Google AI API key")
-    groq_api_key: Optional[str] = Field(default=None, description="Groq API key")
-    
-    # Cloud Model Configuration
-    openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model: gpt-4o-mini, gpt-4o, etc.")
-    anthropic_model: str = Field(default="claude-3-5-sonnet-20241022", description="Anthropic model: claude-3-5-sonnet, etc.")
-    google_model: str = Field(default="gemini-2.0-flash-exp", description="Google model: gemini-2.0-flash-exp, gemini-1.5-pro, etc.")
-    groq_model: str = Field(default="llama-3.3-70b-versatile", description="Groq model: llama-3.3-70b-versatile, etc.")
+    # Cloud Provider (OpenRouter-only)
+    openrouter_api_key: Optional[str] = Field(default=None, description="OpenRouter API key")
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description="OpenRouter API base URL"
+    )
+    openrouter_model: str = Field(
+        default="google/gemma-4-31b-it:free",
+        description="OpenRouter model slug (e.g., google/gemma-4-31b-it:free)"
+    )
+    openai_api_key: Optional[str] = Field(
+        default=None,
+        description="OpenAI API key (used only when EMBEDDING_PROVIDER=openai)"
+    )
     
     # Embedding Provider (can be different from LLM provider)
     embedding_provider: Literal["ollama", "openai"] = Field(
@@ -150,14 +153,8 @@ class Settings(BaseSettings):
         """Get the current LLM model based on provider."""
         if self.ai_provider == "ollama":
             return self.ollama_llm_model
-        elif self.ai_provider == "openai":
-            return self.openai_model
-        elif self.ai_provider == "anthropic":
-            return self.anthropic_model
-        elif self.ai_provider == "google":
-            return self.google_model
-        elif self.ai_provider == "groq":
-            return self.groq_model
+        elif self.ai_provider == "openrouter":
+            return self.openrouter_model
         return self.ollama_llm_model
     
     @property

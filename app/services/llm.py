@@ -16,6 +16,14 @@ class LLMService:
     def __init__(self):
         self.max_context_tokens = settings.max_context_tokens
         self.max_output_tokens = settings.max_output_tokens
+        self.fallback_provider = None
+        self.phase_max_tokens = {
+            "plan": 180,
+            "reason": 260,
+            "verify": 220,
+            "answer": 420,
+            "refine": 100
+        }
         
         # Initialize provider based on configuration
         self._init_provider()
@@ -37,44 +45,48 @@ class LLMService:
                 model=settings.ollama_llm_model,
                 max_output_tokens=self.max_output_tokens
             )
-        elif provider == "openai":
-            if not settings.openai_api_key:
-                raise ValueError("OPENAI_API_KEY not set in environment")
+        elif provider == "openrouter":
+            if not settings.openrouter_api_key:
+                raise ValueError("OPENROUTER_API_KEY not set in environment")
             self.provider = create_llm_provider(
-                provider="openai",
-                api_key=settings.openai_api_key,
-                model=settings.openai_model,
-                max_output_tokens=self.max_output_tokens
-            )
-        elif provider == "anthropic":
-            if not settings.anthropic_api_key:
-                raise ValueError("ANTHROPIC_API_KEY not set in environment")
-            self.provider = create_llm_provider(
-                provider="anthropic",
-                api_key=settings.anthropic_api_key,
-                model=settings.anthropic_model,
-                max_output_tokens=self.max_output_tokens
-            )
-        elif provider == "google":
-            if not settings.google_api_key:
-                raise ValueError("GOOGLE_API_KEY not set in environment")
-            self.provider = create_llm_provider(
-                provider="google",
-                api_key=settings.google_api_key,
-                model=settings.google_model,
-                max_output_tokens=self.max_output_tokens
-            )
-        elif provider == "groq":
-            if not settings.groq_api_key:
-                raise ValueError("GROQ_API_KEY not set in environment")
-            self.provider = create_llm_provider(
-                provider="groq",
-                api_key=settings.groq_api_key,
-                model=settings.groq_model,
+                provider="openrouter",
+                api_key=settings.openrouter_api_key,
+                base_url=settings.openrouter_base_url,
+                model=settings.openrouter_model,
                 max_output_tokens=self.max_output_tokens
             )
         else:
             raise ValueError(f"Unsupported AI provider: {provider}")
+
+    def _is_rate_limit_error(self, error: Exception) -> bool:
+        """Detect provider rate-limit errors."""
+        message = str(error).lower()
+        return any(token in message for token in [
+            "429",
+            "rate limit",
+            "too many requests",
+            "temporarily rate-limited"
+        ])
+
+    def _get_fallback_provider(self):
+        """Lazily initialize ollama fallback provider for OpenRouter rate limits."""
+        if self.fallback_provider:
+            return self.fallback_provider
+
+        try:
+            self.fallback_provider = create_llm_provider(
+                provider="ollama",
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_llm_model,
+                max_output_tokens=self.max_output_tokens
+            )
+            logger.warning(
+                f"Initialized fallback LLM provider: ollama ({settings.ollama_llm_model})"
+            )
+            return self.fallback_provider
+        except Exception as fallback_error:
+            logger.error(f"Failed to initialize fallback LLM provider: {fallback_error}")
+            return None
     
     def _validate_and_truncate_prompt(
         self, 
@@ -130,7 +142,7 @@ class LLMService:
             
             # Add default system message if none provided
             if not system:
-                system = "You are a helpful AI assistant. Provide your answer directly without showing your thinking process."
+                system = "Answer directly. Do not reveal chain-of-thought."
             
             # DEBUG: Log generation details
             logger.info("=" * 80)
@@ -158,6 +170,23 @@ class LLMService:
             return content
             
         except Exception as e:
+            if settings.ai_provider == "openrouter" and self._is_rate_limit_error(e):
+                logger.warning(
+                    "OpenRouter rate-limited. Attempting fallback with local Ollama provider."
+                )
+                fallback_provider = self._get_fallback_provider()
+                if fallback_provider:
+                    content = await fallback_provider.generate(
+                        prompt=prompt,
+                        system=system,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                    logger.info(
+                        f"Fallback LLM response received from ollama ({len(content)} chars)"
+                    )
+                    return content
+
             error_msg = str(e).lower()
             if any(keyword in error_msg for keyword in ["context", "length", "token", "too long"]):
                 logger.error(f"Context length error in LLM generation: {e}")
@@ -193,98 +222,91 @@ class LLMService:
             return False
     
     # Prompt templates for different agent phases
+
+    def get_phase_max_tokens(self, phase: str, fallback: int) -> int:
+        """Return per-phase max_tokens budget."""
+        return self.phase_max_tokens.get(phase, fallback)
     
     def create_plan_prompt(self, query: str) -> str:
         """Create prompt for the planning phase."""
-        return f"""Analyze the following user query and create a retrieval strategy.
+        return f"""Plan retrieval for this query.
+Query: {query}
 
-User Query: {query}
+Output format:
+Needed Information:
+- ...
+Search Terms:
+- ...
+Relevant Source Types:
+- ...
+Potential Gaps:
+- ...
 
-Create a plan that describes:
-1. What information is needed to answer this query
-2. What search terms or concepts to look for
-3. What type of documents would be most relevant
-
-Provide ONLY the plan, no preamble or explanation."""
+Keep concise. Return ONLY this structure."""
     
     def create_reason_prompt(self, query: str, retrieved_docs: str) -> str:
         """Create prompt for the reasoning phase."""
-        return f"""Evaluate the retrieved information and determine if it's sufficient to answer the query.
-
-User Query: {query}
-
-Retrieved Information:
+        return f"""Evaluate answer readiness from context.
+Query: {query}
+Retrieved Context:
 {retrieved_docs}
 
-Analyze:
-1. Is the information relevant to the query?
-2. Is there enough information to provide a complete answer?
-3. Are there any gaps or missing information?
+Output format:
+Relevance:
+...
+Sufficiency:
+...
+Gaps:
+- ...
+Decision:
+[answer|retrieve_more]
 
-Provide ONLY your analysis, no preamble."""
+Return ONLY this analysis."""
     
     def create_verify_prompt(self, query: str, answer: str, context: str) -> str:
         """Create prompt for verification phase."""
-        return f"""Check if the answer is grounded in the provided context and detect any hallucinations.
-
-User Query: {query}
-
-Proposed Answer: {answer}
-
+        return f"""Verify whether answer is fully supported by context.
+Query: {query}
+Answer: {answer}
 Context:
 {context}
 
-Verify:
-1. Is every claim in the answer supported by the context?
-2. Are there any fabricated or unsupported statements?
-3. What is your confidence level (0.0-1.0)?
-
-Provide ONLY the verification result in this exact format:
+YOU MUST respond in this exact format:
 Verified: [yes/no]
-Confidence: [0.0-1.0]
-Issues: [list any problems or write "none"]"""
+Confidence score: [0.0-1.0]
+Issues: [none OR short semicolon-separated issues]
+
+Return ONLY these three lines."""
     
     def create_answer_prompt(self, query: str, context: str) -> str:
         """Create prompt for final answer generation."""
-        system = """You are a helpful AI assistant. Answer the user's question based ONLY on the provided context. 
-If the context doesn't contain enough information, say so. Always cite your sources using APA format in-text citations."""
-        
-        prompt = f"""Context:
+        return f"""Answer using ONLY the provided context.
+Question: {query}
+Context:
 {context}
 
-Question: {query}
+Rules:
+1. Be direct and factual.
+2. Add in-text citations after factual claims.
+3. Include a References section.
+4. If context is insufficient, explicitly say what is missing and that web search is required before a final answer.
 
-Provide a clear, accurate answer based solely on the context above. 
-
-IMPORTANT: 
-- If the context does NOT contain relevant information, respond ONLY with: "I don't have information about [topic] in the provided context."
-- Do NOT list what other topics are mentioned if information is unavailable.
-- When answering, use APA format for citations:
-  * For in-text citations: (Author, Year) or (Author, Year, p. X)
-  * For PDF sources without clear author/year: (Source Title, n.d.)
-  * Include full references at the end under "References"
-
-Example answer with citations:
-"Deep Q-Learning uses neural networks to approximate Q-functions (Smith, 2020). According to recent research (Johnson & Lee, 2021), this approach has shown significant improvements..."
+Output structure:
+Answer:
+[answer with citations]
 
 References:
-Smith, J. (2020). Deep reinforcement learning. Journal of AI, 15(2), 45-67.
-Johnson, M., & Lee, K. (2021). Adaptive game AI techniques. In Proceedings of AI Conference (pp. 123-145).
-
-Example when information is unavailable:
-"I don't have information about BTRFS in the provided context.\""""
-        
-        return prompt
+- [reference 1]
+- [reference 2]"""
     
     def create_refine_query_prompt(self, original_query: str, reasoning: str) -> str:
         """Create prompt for query refinement."""
-        return f"""You are a query refinement agent. Based on the reasoning below, create a better search query.
-
+        return f"""Refine query for retrieval.
 Original Query: {original_query}
+Previous Reasoning: {reasoning}
 
-Reasoning: {reasoning}
-
-Create a refined query that will retrieve more relevant information. Output only the refined query, nothing else."""
+Return ONE improved query only.
+Keep same intent, add missing terms, max 20 words."""
 
 
 # Global LLM service instance
