@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, List, Tuple
 import time
 from datetime import datetime, timezone
 from app.models.entities import AgentState, RetrievalResult
-from app.services.llm import llm_service
+from app.services.llm import llm_service, LLMBudgetExceededError, LLMRateLimitError
 from app.services.retrieval import retrieval_service
 from app.services.verification import verification_service
 from app.services.agent_router import agent_router, ToolType
@@ -26,6 +26,9 @@ class AgenticRAG:
     Enhanced with multi-tool support, agent router (Sprint 4), and sub-agent delegation.
     Integration: Workflow Orchestrator for intelligent tool sequencing (Sprint 4, Group 3, Task 2).
     """
+
+    WEB_CONTEXT_MAX_RESULTS = 2
+    WEB_CONTEXT_MAX_CHARS = 320
     
     def __init__(
         self,
@@ -34,9 +37,12 @@ class AgenticRAG:
         enable_verification: Optional[bool] = None,
         enable_tools: bool = True
     ):
-        self.max_iterations = max_iterations or settings.max_agent_iterations
+        configured_max_iterations = max_iterations or settings.max_agent_iterations
+        configured_verification = enable_verification if enable_verification is not None else settings.enable_verification
+        self.max_iterations = llm_service.get_effective_max_iterations(configured_max_iterations)
         self.min_confidence = min_confidence or settings.min_confidence_threshold
-        self.enable_verification = enable_verification if enable_verification is not None else settings.enable_verification
+        self.enable_verification = llm_service.get_effective_verification_enabled(configured_verification)
+        self.free_mode_enabled = llm_service.is_openrouter_free_mode()
         self.enable_tools = enable_tools
         self.routing_history: List[Dict[str, Any]] = []
         self.orchestrator = orchestrator
@@ -79,7 +85,10 @@ class AgenticRAG:
                 logger.warning(f"Failed to initialize tools: {e}. Running without tools.")
                 self.enable_tools = False
         
-        logger.info(f"AgenticRAG initialized (max_iter={self.max_iterations}, min_conf={self.min_confidence}, tools={self.enable_tools})")
+        logger.info(
+            f"AgenticRAG initialized (max_iter={self.max_iterations}, min_conf={self.min_confidence}, "
+            f"verify={self.enable_verification}, free_mode={self.free_mode_enabled}, tools={self.enable_tools})"
+        )
     
     async def query(
         self,
@@ -110,7 +119,11 @@ class AgenticRAG:
             logger.info(f"Iteration {state.iteration}/{self.max_iterations}")
             
             # Phase 1: Plan
-            plan = await self._plan_phase(state)
+            if self.free_mode_enabled:
+                plan = "Plan phase skipped in OpenRouter free mode to preserve call budget."
+                state.add_reasoning("DEGRADED_MODE", "Skipped PLAN phase due to free-mode budget optimization")
+            else:
+                plan = await self._plan_phase(state)
             state.plan = plan
             state.add_reasoning("PLAN", plan)
             
@@ -127,7 +140,7 @@ class AgenticRAG:
             
             if not retrieved:
                 state.add_reasoning("RETRIEVE", "No relevant documents found")
-                if state.iteration < self.max_iterations:
+                if state.iteration < self.max_iterations and not self.free_mode_enabled:
                     # Try query refinement
                     state.current_query = await self._refine_query(state)
                     state.add_reasoning("REFINE", f"Refined query: {state.current_query}")
@@ -139,7 +152,11 @@ class AgenticRAG:
                     break
             
             # Phase 3: Reason
-            reasoning = await self._reason_phase(state)
+            if self.free_mode_enabled:
+                reasoning = "Reason phase skipped in OpenRouter free mode to preserve call budget."
+                state.add_reasoning("DEGRADED_MODE", "Skipped REASON phase due to free-mode budget optimization")
+            else:
+                reasoning = await self._reason_phase(state)
             state.add_reasoning("REASON", reasoning)
             
             # Phase 4: Generate answer
@@ -154,7 +171,9 @@ class AgenticRAG:
                 logger.info(f"DEBUG: Agent received confidence from verification: {confidence_from_verification:.2f}, assigned to state.confidence: {state.confidence:.2f}")
                 state.add_reasoning(
                     "VERIFY",
-                    f"Verified: {verification['verified']}, Confidence: {state.confidence:.2f}"
+                    "Verified: "
+                    f"{verification['verified']}, Confidence: {state.confidence:.2f}, "
+                    f"Evidence: {verification.get('evidence_score', 0.0):.2f}"
                 )
                 
                 # Check for issues
@@ -164,7 +183,11 @@ class AgenticRAG:
                 state.confidence = 0.8  # Default confidence without verification
             
             # Phase 6: Decide
-            decision = await self._decide_phase(state, answer)
+            if self.free_mode_enabled:
+                decision = "answer"
+                state.add_reasoning("DEGRADED_MODE", "Forced single-pass decision in OpenRouter free mode")
+            else:
+                decision = await self._decide_phase(state, answer)
             state.decision = decision
             logger.info(f"DEBUG: Decision made: {decision}")
             
@@ -178,6 +201,12 @@ class AgenticRAG:
                 # Continue iteration - refine query
                 logger.info(f"DEBUG: Continuing to next iteration (current: {state.iteration})")
                 state.add_reasoning("DECIDE", "Need more information, refining query")
+                if self.free_mode_enabled:
+                    state.add_reasoning("DEGRADED_MODE", "Skipped REFINE phase due to free-mode single-pass policy")
+                    state.decision = "answer"
+                    state.final_answer = answer
+                    state.sources = retrieval_service.extract_sources(state.retrieved_docs)
+                    break
                 state.current_query = await self._refine_query(state)
                 state.add_reasoning("REFINE", f"New query: {state.current_query}")
         
@@ -198,6 +227,9 @@ class AgenticRAG:
     async def _plan_phase(self, state: AgentState) -> str:
         """Phase 1: Create retrieval plan with intelligent routing (Sprint 4)."""
         try:
+            if not llm_service.can_execute_phase("plan", optional=True):
+                return "Plan phase skipped because call budget was exhausted."
+
             # Intelligent routing decision
             if self.enable_tools:
                 routing_decision = agent_router.route_query(
@@ -212,7 +244,8 @@ class AgenticRAG:
             plan = await llm_service.generate(
                 prompt,
                 temperature=0.5,
-                max_tokens=llm_service.get_phase_max_tokens("plan", 200)
+                max_tokens=llm_service.get_phase_max_tokens("plan", 200),
+                phase="plan"
             )
             return plan.strip()
         except Exception as e:
@@ -247,7 +280,10 @@ class AgenticRAG:
 
                 if should_enrich:
                     logger.info("Using web search to enrich retrieval context")
-                    web_response = await self.web_search_tool.execute(state.current_query, max_results=3)
+                    web_response = await self.web_search_tool.execute(
+                        state.current_query,
+                        max_results=self.WEB_CONTEXT_MAX_RESULTS
+                    )
                     if web_response.get('success'):
                         web_results = web_response.get('results', [])
                         web_context_docs = self._web_results_to_retrieval_results(web_results, state.iteration)
@@ -274,7 +310,7 @@ class AgenticRAG:
         """Convert web search results into retrieval-style chunks for downstream phases."""
         transformed: List[RetrievalResult] = []
 
-        for idx, item in enumerate(web_results, 1):
+        for idx, item in enumerate(web_results[:self.WEB_CONTEXT_MAX_RESULTS], 1):
             snippet = (item.get('snippet') or '').strip()
             if not snippet:
                 continue
@@ -282,7 +318,11 @@ class AgenticRAG:
             title = (item.get('title') or 'Web Result').strip()
             url = (item.get('url') or '').strip()
             source = (item.get('source') or 'DuckDuckGo').strip()
-            text = f"{title}\n{snippet}\nURL: {url}" if url else f"{title}\n{snippet}"
+            text = self._truncate_web_context_text(
+                title=title,
+                snippet=snippet,
+                url=url
+            )
 
             transformed.append(
                 RetrievalResult(
@@ -297,21 +337,38 @@ class AgenticRAG:
             )
 
         return transformed
+
+    def _truncate_web_context_text(self, title: str, snippet: str, url: str) -> str:
+        """Keep web fallback snippets compact so they do not crowd out RAG context."""
+        parts = [title.strip(), snippet.strip()]
+        if url:
+            parts.append(f"URL: {url.strip()}")
+
+        text = "\n".join(part for part in parts if part)
+        if len(text) <= self.WEB_CONTEXT_MAX_CHARS:
+            return text
+
+        return text[: self.WEB_CONTEXT_MAX_CHARS - 3].rstrip() + "..."
     
     async def _reason_phase(self, state: AgentState) -> str:
         """Phase 3: Reason about retrieved information."""
         try:
+            if not llm_service.can_execute_phase("reason", optional=True):
+                return "Reason phase skipped because call budget was exhausted."
+
             # Limit chunks to avoid context overflow
-            recent_docs = state.retrieved_docs[-settings.max_context_chunks:]
+            recent_docs = state.retrieved_docs[-settings.reason_context_chunks:]
             context = retrieval_service.format_context(
                 recent_docs, 
-                max_tokens=settings.max_context_tokens // 3
+                max_tokens=settings.max_context_tokens // 4,
+                max_results=settings.reason_context_chunks
             )
             prompt = llm_service.create_reason_prompt(state.current_query, context)
             reasoning = await llm_service.generate(
                 prompt,
                 temperature=0.5,
-                max_tokens=llm_service.get_phase_max_tokens("reason", 300)
+                max_tokens=llm_service.get_phase_max_tokens("reason", 300),
+                phase="reason"
             )
             return reasoning.strip()
         except Exception as e:
@@ -321,20 +378,28 @@ class AgenticRAG:
     async def _answer_phase(self, state: AgentState) -> str:
         """Phase 4: Generate answer from retrieved information."""
         try:
+            llm_service.can_execute_phase("answer", optional=False)
+
             # Context is structured with explicit source blocks and END OF CONTEXT marker
             # to make source attribution and parsing clearer for the LLM.
-            recent_docs = state.retrieved_docs[-settings.max_context_chunks:]
+            recent_docs = state.retrieved_docs[-settings.answer_context_chunks:]
             context = retrieval_service.format_context(
                 recent_docs,
-                max_tokens=settings.max_context_tokens // 3
+                max_tokens=settings.max_context_tokens // 3,
+                max_results=settings.answer_context_chunks
             )
             prompt = llm_service.create_answer_prompt(state.original_query, context)
             answer = await llm_service.generate(
                 prompt,
                 temperature=0.7,
-                max_tokens=llm_service.get_phase_max_tokens("answer", 500)
+                max_tokens=llm_service.get_phase_max_tokens("answer", 500),
+                phase="answer"
             )
             return answer.strip()
+        except (LLMBudgetExceededError, LLMRateLimitError) as e:
+            logger.warning(f"Answer phase degraded due to budget/rate limit: {e}")
+            state.add_reasoning("DEGRADED_MODE", f"Answer generated with non-LLM fallback: {str(e)}")
+            return self._build_rate_limited_fallback_answer(state)
         except Exception as e:
             logger.error(f"Error in answer phase: {e}")
             return "I apologize, but I encountered an error generating the answer."
@@ -343,7 +408,7 @@ class AgenticRAG:
         """Phase 5: Verify answer and detect hallucinations."""
         try:
             # Limit docs for verification to avoid context overflow
-            recent_docs = state.retrieved_docs[-settings.max_context_chunks:]
+            recent_docs = state.retrieved_docs[-settings.verify_context_chunks:]
             verification = await verification_service.verify_answer(
                 query=state.original_query,
                 answer=answer,
@@ -362,7 +427,17 @@ class AgenticRAG:
         logger.info(f"  Min confidence threshold: {self.min_confidence}")
         logger.info(f"  Iteration: {state.iteration}/{self.max_iterations}")
         logger.info(f"  Retrieved docs: {len(state.retrieved_docs)}")
-        
+        last_verification = state.verification_results[-1] if state.verification_results else {}
+        evidence_score = max(
+            last_verification.get('evidence_score', 0.0),
+            last_verification.get('grounding_score', 0.0),
+            last_verification.get('retrieval_strength', 0.0)
+        )
+        recent_docs = state.retrieved_docs[-settings.verify_context_chunks:] if state.retrieved_docs else []
+        if recent_docs:
+            evidence_score = max(evidence_score, self._calculate_retrieval_strength(recent_docs))
+        logger.info(f"  Evidence score: {evidence_score:.2f}")
+
         # Decision logic
         if state.confidence and state.confidence >= self.min_confidence:
             logger.info(f"  DECISION: answer (confidence {state.confidence:.2f} >= {self.min_confidence:.2f})")
@@ -370,7 +445,15 @@ class AgenticRAG:
             return "answer"
         else:
             logger.info(f"  Confidence check failed: {state.confidence} < {self.min_confidence}")
-        
+
+        if evidence_score >= max(0.65, self.min_confidence - 0.1) and len(state.retrieved_docs) >= 2:
+            logger.info(
+                f"  DECISION: answer (grounded evidence {evidence_score:.2f} "
+                f"supports answer despite conservative verification)"
+            )
+            logger.info("=" * 80)
+            return "answer"
+
         # Check if we have enough information
         if len(state.retrieved_docs) >= 10:  # Enough documents retrieved
             logger.info(f"  DECISION: answer (enough documents: {len(state.retrieved_docs)} >= 10)")
@@ -394,22 +477,60 @@ class AgenticRAG:
         logger.info(f"  DECISION: answer (no continuation criteria met)")
         logger.info("=" * 80)
         return "answer"
+
+    def _calculate_retrieval_strength(self, docs: List[RetrievalResult]) -> float:
+        """Estimate retrieval strength from the strongest chunks."""
+        if not docs:
+            return 0.0
+
+        top_docs = sorted(docs, key=lambda doc: doc.similarity, reverse=True)[:3]
+        return sum(doc.similarity for doc in top_docs) / len(top_docs)
     
     async def _refine_query(self, state: AgentState) -> str:
         """Refine the query based on reasoning."""
         try:
-            reasoning_summary = state.reasoning[-1] if state.reasoning else "No results found"
+            if not llm_service.can_execute_phase("refine", optional=True):
+                return state.current_query
+
+            reasoning_summary = (
+                " | ".join(state.reasoning[-settings.refine_context_chunks:])
+                if state.reasoning
+                else "No results found"
+            )
             prompt = llm_service.create_refine_query_prompt(state.original_query, reasoning_summary)
             refined = await llm_service.generate(
                 prompt,
                 temperature=0.5,
-                max_tokens=llm_service.get_phase_max_tokens("refine", 100)
+                max_tokens=llm_service.get_phase_max_tokens("refine", 100),
+                phase="refine"
             )
             return refined.strip()
         except Exception as e:
             logger.error(f"Error refining query: {e}")
             # Fallback: slightly rephrase original query
             return f"{state.original_query} information"
+
+    def _build_rate_limited_fallback_answer(self, state: AgentState) -> str:
+        """Create deterministic fallback answer when LLM answering is unavailable."""
+        if not state.retrieved_docs:
+            return (
+                "I am temporarily rate-limited by the current OpenRouter free model and "
+                "could not generate a full answer. Please retry shortly."
+            )
+
+        top_docs = state.retrieved_docs[:3]
+        excerpts = []
+        for idx, doc in enumerate(top_docs, 1):
+            snippet = doc.text.strip().replace("\n", " ")
+            snippet = snippet[:220] + ("..." if len(snippet) > 220 else "")
+            excerpts.append(f"{idx}. [{doc.source}] {snippet}")
+
+        return (
+            "I am temporarily rate-limited by the current OpenRouter free model, so this is a "
+            "degraded evidence snapshot from retrieved context:\n\n"
+            + "\n".join(excerpts)
+            + "\n\nPlease retry shortly for a fully synthesized answer."
+        )
     
     async def execute_with_orchestrator(
         self,

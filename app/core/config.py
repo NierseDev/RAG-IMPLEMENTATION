@@ -24,9 +24,9 @@ class Settings(BaseSettings):
     # ============================================================================
     # AI Provider Configuration
     # ============================================================================
-    ai_provider: Literal["ollama", "openrouter"] = Field(
+    ai_provider: Literal["ollama", "openrouter", "openai"] = Field(
         default="ollama",
-        description="AI provider to use: ollama (local) or openrouter (cloud)"
+        description="AI provider to use: ollama (local), openrouter (cloud), or openai"
     )
     
     # Ollama Configuration (Local)
@@ -45,9 +45,60 @@ class Settings(BaseSettings):
         default="google/gemma-4-31b-it:free",
         description="OpenRouter model slug (e.g., google/gemma-4-31b-it:free)"
     )
+    openrouter_free_mode_enabled: bool = Field(
+        default=False,
+        description="Enable rate-limit-aware OpenRouter free-model execution mode"
+    )
+    openrouter_free_max_calls_per_request: int = Field(
+        default=2,
+        ge=1,
+        description="Maximum LLM calls allowed per request in OpenRouter free mode"
+    )
+    openrouter_free_disable_verification: bool = Field(
+        default=True,
+        description="Disable verification phase in OpenRouter free mode to reduce call volume"
+    )
+    openrouter_free_max_iterations: int = Field(
+        default=1,
+        ge=1,
+        description="Maximum agent iterations allowed in OpenRouter free mode"
+    )
+    openrouter_free_retry_attempts: int = Field(
+        default=2,
+        ge=0,
+        description="Retry attempts for OpenRouter 429 responses in free mode"
+    )
+    openrouter_free_retry_backoff_seconds: float = Field(
+        default=2.0,
+        ge=0.0,
+        description="Base exponential backoff delay for OpenRouter free-mode retries"
+    )
+    openrouter_free_retry_max_backoff_seconds: float = Field(
+        default=20.0,
+        ge=0.0,
+        description="Maximum backoff delay cap for OpenRouter free-mode retries"
+    )
+    openrouter_free_min_inter_call_delay_seconds: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Minimum delay between OpenRouter calls in free mode"
+    )
+    openrouter_free_cooldown_seconds: float = Field(
+        default=15.0,
+        ge=0.0,
+        description="Cooldown applied after OpenRouter 429 when reset headers are unavailable"
+    )
     openai_api_key: Optional[str] = Field(
         default=None,
-        description="OpenAI API key (used only when EMBEDDING_PROVIDER=openai)"
+        description="OpenAI API key (used when AI_PROVIDER=openai or EMBEDDING_PROVIDER=openai)"
+    )
+    openai_base_url: str = Field(
+        default="https://api.openai.com/v1",
+        description="OpenAI API base URL"
+    )
+    openai_model: str = Field(
+        default="gpt-4.1-mini",
+        description="OpenAI model slug"
     )
     
     # Embedding Provider (can be different from LLM provider)
@@ -69,6 +120,11 @@ class Settings(BaseSettings):
     top_k_results: int = Field(default=30, description="Number of results to retrieve per query")
     min_similarity: float = Field(default=0.0, description="Minimum similarity threshold for retrieval")
     max_context_chunks: int = Field(default=100, description="Maximum chunks to include in LLM context")
+    plan_context_chunks: int = Field(default=0, description="Maximum retrieved chunks carried into planning")
+    reason_context_chunks: int = Field(default=6, description="Maximum retrieved chunks carried into reasoning")
+    answer_context_chunks: int = Field(default=8, description="Maximum retrieved chunks carried into answer generation")
+    verify_context_chunks: int = Field(default=4, description="Maximum retrieved chunks carried into verification")
+    refine_context_chunks: int = Field(default=1, description="Maximum reasoning entries carried into query refinement")
     
     # Sprint 3: Advanced Retrieval Configuration
     min_retrieval_chunks: int = Field(default=3, description="Minimum chunks to retrieve")
@@ -155,6 +211,8 @@ class Settings(BaseSettings):
             return self.ollama_llm_model
         elif self.ai_provider == "openrouter":
             return self.openrouter_model
+        elif self.ai_provider == "openai":
+            return self.openai_model
         return self.ollama_llm_model
     
     @property

@@ -3,6 +3,7 @@ Query endpoints for agentic RAG.
 """
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional, Dict, Any
+import asyncio
 import time
 from app.models.requests import (
     QueryRequest,
@@ -16,7 +17,7 @@ from app.services.agent import create_agent
 from app.services.retrieval import retrieval_service
 from app.services.query_service import query_service
 from app.services.llm import llm_service
-from app.core.database import get_supabase_client
+from app.core.database import db, get_supabase_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,24 @@ def _normalize_session(session: Dict[str, Any]) -> Dict[str, Any]:
     if 'session_id' not in normalized and 'id' in normalized:
         normalized['session_id'] = normalized['id']
     return normalized
+
+
+async def _build_answer_sources(docs):
+    """Build structured answer sources with document titles."""
+    if not docs:
+        return []
+
+    seen = set()
+    unique_sources = []
+    for doc in sorted(docs, key=lambda item: item.similarity, reverse=True):
+        if doc.source in seen:
+            continue
+        seen.add(doc.source)
+        unique_sources.append(doc.source)
+
+    display_names = await asyncio.gather(*(db.get_document_display_name(source) for source in unique_sources))
+    document_names = dict(zip(unique_sources, display_names))
+    return retrieval_service.build_source_references(docs, document_names=document_names)
 
 
 @router.post("/agentic", response_model=AgentResponse)
@@ -47,13 +66,15 @@ async def agentic_query(request: QueryRequest):
         
         # Sprint 4: Store metadata filters in agent state for retrieval
         # We'll need to extend the agent to pass filters to retrieve
-        state = await agent.query(
-            query=request.query,
-            top_k=request.top_k,
-            filter_source=request.filter_source,
-            metadata_filters=request.metadata_filters,
-            filter_logic=request.filter_logic
-        )
+        async with llm_service.request_budget("agentic"):
+            state = await agent.query(
+                query=request.query,
+                top_k=request.top_k,
+                filter_source=request.filter_source,
+                metadata_filters=request.metadata_filters,
+                filter_logic=request.filter_logic
+            )
+            degraded_mode = llm_service.get_budget_snapshot()
         
         processing_time = time.time() - start_time
         
@@ -112,7 +133,7 @@ async def agentic_query(request: QueryRequest):
             query=state.original_query,
             answer=answer_text,
             confidence=state.confidence,
-            sources=state.sources,
+            sources=await _build_answer_sources(state.retrieved_docs),
             reasoning_trace=state.reasoning,
             iterations=state.iteration,
             retrieved_chunks=len(state.retrieved_docs),
@@ -122,7 +143,8 @@ async def agentic_query(request: QueryRequest):
             retrieved_chunks_detail=retrieved_chunks_detail,
             verification_detail=verification_detail,
             agent_steps=agent_steps,
-            tool_calls=[]  # TODO: Track tool calls from agent
+            tool_calls=[],  # TODO: Track tool calls from agent
+            degraded_mode=degraded_mode
         )
 
         # Best-effort message persistence for session-backed chat UIs.
@@ -183,7 +205,9 @@ async def simple_query(request: SimpleQueryRequest):
         
         # Generate answer
         prompt = llm_service.create_answer_prompt(request.query, context)
-        answer = await llm_service.generate(prompt, temperature=0.7)
+        async with llm_service.request_budget("simple"):
+            answer = await llm_service.generate(prompt, temperature=0.7, phase="answer")
+            degraded_mode = llm_service.get_budget_snapshot()
         
         # Format sources
         sources = [
@@ -199,7 +223,8 @@ async def simple_query(request: SimpleQueryRequest):
             query=request.query,
             answer=answer.strip(),
             sources=sources,
-            retrieved_chunks=len(results)
+            retrieved_chunks=len(results),
+            degraded_mode=degraded_mode
         )
     
     except Exception as e:

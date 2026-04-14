@@ -68,6 +68,9 @@ cp .env.example .env
 # Edit .env and add your Supabase credentials:
 # - SUPABASE_URL
 # - SUPABASE_SERVICE_ROLE_KEY
+# Optional AI providers:
+# - OPENROUTER_API_KEY / OPENROUTER_MODEL
+# - OPENAI_API_KEY / OPENAI_MODEL
 ```
 
 #### Step 5: Start the Server

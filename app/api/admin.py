@@ -26,6 +26,7 @@ async def health_check():
         
         # Check Ollama LLM
         llm_available = await llm_service.check_availability()
+        llm_status = llm_service.get_provider_status()
         
         # Check Ollama embeddings
         embed_available = await embedding_service.check_availability()
@@ -40,7 +41,8 @@ async def health_check():
             ollama_models={
                 "llm": llm_available,
                 "embeddings": embed_available
-            }
+            },
+            llm_status=llm_status
         )
     except Exception as e:
         logger.error(f"Health check error: {e}")
@@ -102,6 +104,7 @@ async def get_agent_status():
         
         # Check agent components
         llm_status = await llm_service.check_availability()
+        llm_provider_status = llm_service.get_provider_status()
         embed_status = await embedding_service.check_availability()
         
         return {
@@ -109,7 +112,9 @@ async def get_agent_status():
             "llm": {
                 "available": llm_status,
                 "model": settings.current_llm_model,
-                "provider": settings.ai_provider
+                "provider": settings.ai_provider,
+                "rate_limited": llm_provider_status.get("rate_limited", False),
+                "rate_limit": llm_provider_status.get("rate_limit", {})
             },
             "embeddings": {
                 "available": embed_status,

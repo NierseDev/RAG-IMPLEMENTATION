@@ -2,10 +2,11 @@
 Verification service for hallucination detection and answer validation.
 """
 from typing import Dict, List, Tuple
-from app.services.llm import llm_service
+from app.services.llm import llm_service, LLMBudgetExceededError, LLMRateLimitError
 from app.models.entities import RetrievalResult
 from app.core.config import settings
 from app.core.text_utils import estimate_tokens, truncate_to_token_limit
+from app.services.retrieval import retrieval_service
 import logging
 import re
 
@@ -42,7 +43,8 @@ class VerificationService:
             verification_result = await llm_service.generate(
                 verification_prompt,
                 temperature=0.3,  # Low temperature for consistency
-                max_tokens=llm_service.get_phase_max_tokens("verify", 300)
+                max_tokens=llm_service.get_phase_max_tokens("verify", 300),
+                phase="verify"
             )
             
             # DEBUG: Log raw LLM response
@@ -60,19 +62,46 @@ class VerificationService:
             
             # Additional checks
             grounding_score = self._check_grounding(answer, retrieved_docs)
+            retrieval_strength = self._calculate_retrieval_strength(retrieved_docs)
+            evidence_score = max(grounding_score, retrieval_strength)
             parsed['grounding_score'] = grounding_score
-            logger.info(f"DEBUG: Grounding score calculated: {grounding_score:.2f}")
-            
-            # Adjust confidence based on grounding
+            parsed['retrieval_strength'] = retrieval_strength
+            parsed['evidence_score'] = evidence_score
+            logger.info(
+                f"DEBUG: Grounding score={grounding_score:.2f}, "
+                f"retrieval strength={retrieval_strength:.2f}, evidence={evidence_score:.2f}"
+            )
+
+            # Rebalance confidence: evidence can lift conservative verification,
+            # but weak evidence still keeps the answer conservative.
             original_confidence = parsed['confidence']
-            if grounding_score < 0.5:
+            blended_confidence = (parsed['confidence'] * 0.4) + (evidence_score * 0.6)
+            if evidence_score >= 0.65:
+                parsed['confidence'] = max(blended_confidence, evidence_score * 0.95)
+            else:
+                parsed['confidence'] = blended_confidence
+
+            if evidence_score < 0.35:
                 parsed['confidence'] = min(parsed['confidence'], 0.5)
-                parsed['issues'].append(f"Low grounding score: {grounding_score:.2f}")
-                logger.warning(f"DEBUG: Confidence capped from {original_confidence:.2f} to {parsed['confidence']:.2f} due to low grounding")
-            
+                parsed['issues'].append(f"Low evidence score: {evidence_score:.2f}")
+
+            if parsed['confidence'] != original_confidence:
+                logger.warning(
+                    f"DEBUG: Confidence adjusted from {original_confidence:.2f} "
+                    f"to {parsed['confidence']:.2f}"
+                )
+
             logger.info(f"Verification: {parsed['verified']}, confidence: {parsed['confidence']:.2f}")
             return parsed
             
+        except (LLMBudgetExceededError, LLMRateLimitError) as e:
+            logger.warning(f"Verification skipped due to LLM budget/rate limit: {e}")
+            return {
+                'verified': False,
+                'confidence': 0.5,
+                'issues': [f"Verification skipped: {str(e)}"],
+                'grounding_score': 0.0
+            }
         except Exception as e:
             logger.error(f"Error in verification: {e}")
             return {
@@ -90,15 +119,15 @@ class VerificationService:
         if not retrieved_docs or not answer:
             return 0.0
         
-        # Extract key phrases from answer (simple approach)
-        answer_words = set(answer.lower().split())
+        # Extract normalized tokens so punctuation does not suppress overlap.
+        answer_words = set(re.findall(r"[a-z0-9]+", answer.lower()))
         
         # Check overlap with retrieved documents
         total_overlap = 0
         total_words = 0
         
         for doc in retrieved_docs:
-            doc_words = set(doc.text.lower().split())
+            doc_words = set(re.findall(r"[a-z0-9]+", doc.text.lower()))
             overlap = len(answer_words & doc_words)
             total_overlap += overlap
             total_words += len(doc_words)
@@ -109,6 +138,16 @@ class VerificationService:
         # Calculate grounding score
         grounding_score = min(total_overlap / len(answer_words), 1.0) if answer_words else 0.0
         return grounding_score
+
+    def _calculate_retrieval_strength(self, retrieved_docs: List[RetrievalResult]) -> float:
+        """
+        Estimate retrieval quality from the strongest retrieved chunks.
+        """
+        if not retrieved_docs:
+            return 0.0
+
+        top_docs = sorted(retrieved_docs, key=lambda doc: doc.similarity, reverse=True)[:3]
+        return sum(doc.similarity for doc in top_docs) / len(top_docs)
     
     def _parse_verification(self, verification_text: str) -> Dict:
         """Parse LLM verification output."""
@@ -204,24 +243,17 @@ class VerificationService:
         return len(gaps) > 0, gaps
     
     def _format_context(self, results: List[RetrievalResult]) -> str:
-        """Format results into a clear, structured context string."""
+        """Format results using the shared compact retrieval context format."""
         if not results:
             return ""
 
-        parts = []
-        for idx, result in enumerate(results, 1):
-            page_hint = self._extract_page_hint(result.chunk_id)
-            page_line = f"- Page Hint: {page_hint}\n" if page_hint else ""
-            parts.append(
-                f"=== Source {idx} ===\n"
-                f"- Source: {result.source}\n"
-                f"- Chunk ID: {result.chunk_id}\n"
-                f"- Similarity Score: {result.similarity:.3f}\n"
-                f"{page_line}"
-                f"Content:\n{result.text}\n"
-                f"=== End Source {idx} ==="
-            )
-        return "\n\n".join(parts) + "\n\nEND OF CONTEXT"
+        return retrieval_service.format_context(
+            results,
+            max_tokens=settings.max_context_tokens // 4,
+            max_results=settings.verify_context_chunks,
+            include_page_hint=False,
+            include_created_at=False
+        )
 
     def _extract_page_hint(self, chunk_id: str) -> str:
         """Extract page hint from chunk identifier when available."""

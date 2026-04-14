@@ -53,12 +53,22 @@ class VerificationTrace(BaseModel):
     iteration: int
 
 
+class AnswerSource(BaseModel):
+    """Structured source reference for answer responses."""
+    document_name: str
+    source: str
+    chunk_id: Optional[str] = None
+    similarity: Optional[float] = None
+    page: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
 class AgentResponse(BaseModel):
     """Response from agentic RAG query with detailed trace data."""
     query: str
     answer: str
     confidence: Optional[float] = None
-    sources: List[str] = Field(default_factory=list)
+    sources: List[AnswerSource] = Field(default_factory=list)
     reasoning_trace: List[str] = Field(default_factory=list)
     iterations: int = 0
     retrieved_chunks: int = 0
@@ -70,6 +80,7 @@ class AgentResponse(BaseModel):
     verification_detail: List[VerificationTrace] = Field(default_factory=list)
     agent_steps: List[Dict[str, Any]] = Field(default_factory=list)
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+    degraded_mode: Optional[Dict[str, Any]] = None
 
 
 class SimpleRAGResponse(BaseModel):
@@ -78,6 +89,7 @@ class SimpleRAGResponse(BaseModel):
     answer: str
     sources: List[Dict[str, Any]] = Field(default_factory=list)
     retrieved_chunks: int = 0
+    degraded_mode: Optional[Dict[str, Any]] = None
 
 
 class HybridSearchBreakdown(BaseModel):
@@ -109,6 +121,7 @@ class HealthResponse(BaseModel):
     database_connected: bool
     ollama_available: bool
     ollama_models: Optional[Dict[str, bool]] = None
+    llm_status: Optional[Dict[str, Any]] = None
 
 
 class StatsResponse(BaseModel):

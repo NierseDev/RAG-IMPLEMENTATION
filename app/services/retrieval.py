@@ -4,6 +4,7 @@ Enhanced with hybrid search (vector + keyword) support (Sprint 3).
 Integrated with metadata filtering (Sprint 4).
 """
 from typing import List, Optional, Dict, Any
+from pathlib import Path
 from app.core.database import db
 from app.services.embedding import embedding_service
 from app.models.entities import RetrievalResult
@@ -225,10 +226,13 @@ class RetrievalService:
     def format_context(
         self, 
         results: List[RetrievalResult], 
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        max_results: Optional[int] = None,
+        include_page_hint: bool = True,
+        include_created_at: bool = False
     ) -> str:
         """
-        Format retrieval results into context string with APA-style source information.
+        Format retrieval results into a compact context string.
         Ensures the context fits within token limits.
         """
         if not results:
@@ -236,25 +240,41 @@ class RetrievalService:
         
         # Use configured max or default
         max_tokens = max_tokens or settings.max_context_tokens
+        selected_results = results[:max_results] if max_results is not None else results
         
-        # Format each result with explicit structure to reduce prompt ambiguity
-        context_parts = []
-        for idx, result in enumerate(results, 1):
-            page_hint = self._extract_page_hint(result.chunk_id)
-            created_at = result.created_at.isoformat() if result.created_at else "unknown"
-            page_line = f"- Page Hint: {page_hint}\n" if page_hint else ""
+        # Group by source so citation numbers map to documents, not chunks.
+        grouped_results: Dict[str, List[RetrievalResult]] = {}
+        source_order: List[str] = []
+        for result in selected_results:
+            if result.source not in grouped_results:
+                grouped_results[result.source] = []
+                source_order.append(result.source)
+            grouped_results[result.source].append(result)
 
-            part = (
-                f"=== Source {idx} ===\n"
-                f"- Source: {result.source}\n"
-                f"- Chunk ID: {result.chunk_id}\n"
-                f"- Similarity Score: {result.similarity:.3f}\n"
-                f"- Created At: {created_at}\n"
-                f"{page_line}"
-                f"Content:\n{result.text}\n"
-                f"=== End Source {idx} ===\n"
-            )
-            context_parts.append(part)
+        # Format each source with a compact, consistent structure.
+        context_parts = []
+        for idx, source in enumerate(source_order, 1):
+            source_results = grouped_results[source]
+            lines = [
+                f"=== Source {idx} ===",
+                f"source: {source}",
+                f"chunk_count: {len(source_results)}"
+            ]
+            for chunk_idx, result in enumerate(source_results, 1):
+                page_hint = self._extract_page_hint(result.chunk_id)
+                lines.extend([
+                    f"chunk: {result.chunk_id}",
+                    f"score: {result.similarity:.3f}"
+                ])
+                if include_created_at and result.created_at:
+                    lines.append(f"created: {result.created_at.isoformat()}")
+                if include_page_hint and page_hint:
+                    lines.append(f"page: {page_hint}")
+                lines.append(f"text: {result.text}")
+                if chunk_idx < len(source_results):
+                    lines.append("---")
+            lines.append(f"=== End Source {idx} ===")
+            context_parts.append("\n".join(lines))
         
         # Check total token count
         full_context = "\n".join(context_parts)
@@ -297,6 +317,42 @@ class RetrievalService:
                 sources.append(source_info)
                 seen.add(result.source)
         return sources
+
+    def build_source_references(
+        self,
+        results: List[RetrievalResult],
+        document_names: Optional[Dict[str, str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Build structured source references for answer responses."""
+        if not results:
+            return []
+
+        document_names = document_names or {}
+        references: List[Dict[str, Any]] = []
+        seen = set()
+
+        for result in sorted(results, key=lambda item: item.similarity, reverse=True):
+            if result.source in seen:
+                continue
+
+            seen.add(result.source)
+            document_name = document_names.get(result.source) or self._derive_document_name(result.source)
+            references.append({
+                "document_name": document_name,
+                "source": result.source,
+                "chunk_id": result.chunk_id,
+                "similarity": round(result.similarity, 3),
+                "page": self._extract_page_hint(result.chunk_id),
+                "created_at": result.created_at.isoformat() if result.created_at else None
+            })
+
+        return references
+
+    def _derive_document_name(self, source: str) -> str:
+        """Fallback source label when no document title is available."""
+        name = Path(source).name or source
+        stem = Path(name).stem
+        return stem if stem else name
     
     async def refine_query(self, original_query: str, feedback: str) -> str:
         """

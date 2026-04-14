@@ -97,7 +97,15 @@ async def chat_interface():
     """Serve the agentic chat interface."""
     html_path = static_path / "chat.html"
     if html_path.exists():
-        return HTMLResponse(content=html_path.read_text(encoding='utf-8'), status_code=200)
+        return HTMLResponse(
+            content=html_path.read_text(encoding='utf-8'),
+            status_code=200,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     else:
         return HTMLResponse(
             content="<html><body><h1>Chat interface not found</h1></body></html>",

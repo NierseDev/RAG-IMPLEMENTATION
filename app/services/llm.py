@@ -1,7 +1,12 @@
 """
 LLM service with multi-provider support and prompt management.
 """
-from typing import Optional, AsyncGenerator
+from typing import Optional, AsyncGenerator, Dict, Any
+from contextlib import asynccontextmanager
+import contextvars
+import asyncio
+import time
+import re
 from app.core.config import settings
 from app.core.text_utils import estimate_tokens, truncate_to_token_limit
 from app.services.llm_providers import create_llm_provider
@@ -10,20 +15,40 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class LLMBudgetExceededError(RuntimeError):
+    """Raised when a request exceeds configured LLM call budget."""
+
+
+class LLMRateLimitError(RuntimeError):
+    """Raised when provider is rate-limited and retries are exhausted."""
+
+
 class LLMService:
     """Service for LLM interactions with multi-provider support."""
     
     def __init__(self):
         self.max_context_tokens = settings.max_context_tokens
         self.max_output_tokens = settings.max_output_tokens
-        self.fallback_provider = None
         self.phase_max_tokens = {
-            "plan": 180,
-            "reason": 260,
-            "verify": 220,
-            "answer": 420,
-            "refine": 100
+            "plan": 120,
+            "reason": 200,
+            "verify": 160,
+            "answer": 320,
+            "refine": 80
         }
+        self._request_budget_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+            contextvars.ContextVar("llm_request_budget", default=None)
+        )
+        self._provider_status: Dict[str, Any] = {
+            "available": True,
+            "rate_limited": False,
+            "last_error": None,
+            "last_rate_limit_at": None,
+            "cooldown_until": None
+        }
+        self._openrouter_last_call_at: float = 0.0
+        self._openrouter_cooldown_until: float = 0.0
+        self._last_rate_limit_state: Dict[str, Any] = {}
         
         # Initialize provider based on configuration
         self._init_provider()
@@ -55,6 +80,16 @@ class LLMService:
                 model=settings.openrouter_model,
                 max_output_tokens=self.max_output_tokens
             )
+        elif provider == "openai":
+            if not settings.openai_api_key:
+                raise ValueError("OPENAI_API_KEY not set in environment")
+            self.provider = create_llm_provider(
+                provider="openai",
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url,
+                model=settings.openai_model,
+                max_output_tokens=self.max_output_tokens
+            )
         else:
             raise ValueError(f"Unsupported AI provider: {provider}")
 
@@ -68,25 +103,81 @@ class LLMService:
             "temporarily rate-limited"
         ])
 
-    def _get_fallback_provider(self):
-        """Lazily initialize ollama fallback provider for OpenRouter rate limits."""
-        if self.fallback_provider:
-            return self.fallback_provider
+    def is_openrouter_free_mode(self) -> bool:
+        """Check whether OpenRouter free-mode throttling/budget controls are active."""
+        if settings.ai_provider != "openrouter":
+            return False
+        if not settings.openrouter_free_mode_enabled:
+            return False
+        return settings.openrouter_model.endswith(":free")
 
+    @asynccontextmanager
+    async def request_budget(self, request_type: str, max_calls: Optional[int] = None):
+        """Context manager to track per-request LLM call budget and degradation metadata."""
+        effective_max_calls = max_calls
+        if effective_max_calls is None and self.is_openrouter_free_mode():
+            effective_max_calls = settings.openrouter_free_max_calls_per_request
+
+        budget = {
+            "request_type": request_type,
+            "free_mode": self.is_openrouter_free_mode(),
+            "max_calls": effective_max_calls,
+            "calls_made": 0,
+            "phase_calls": [],
+            "skipped_phases": [],
+            "degraded": False,
+            "degrade_reasons": [],
+            "rate_limit_hits": 0,
+            "started_at": time.time()
+        }
+        token = self._request_budget_ctx.set(budget)
         try:
-            self.fallback_provider = create_llm_provider(
-                provider="ollama",
-                base_url=settings.ollama_base_url,
-                model=settings.ollama_llm_model,
-                max_output_tokens=self.max_output_tokens
-            )
-            logger.warning(
-                f"Initialized fallback LLM provider: ollama ({settings.ollama_llm_model})"
-            )
-            return self.fallback_provider
-        except Exception as fallback_error:
-            logger.error(f"Failed to initialize fallback LLM provider: {fallback_error}")
+            yield
+        finally:
+            self._request_budget_ctx.reset(token)
+
+    def can_execute_phase(self, phase: str, optional: bool = True) -> bool:
+        """Check whether a phase should run without exhausting request budget."""
+        budget = self._request_budget_ctx.get()
+        if not budget:
+            return True
+
+        max_calls = budget.get("max_calls")
+        if max_calls is None:
+            return True
+
+        if budget["calls_made"] < max_calls:
+            return True
+
+        if optional:
+            budget["degraded"] = True
+            budget["skipped_phases"].append(phase)
+            budget["degrade_reasons"].append(f"budget_exhausted_before_{phase}")
+            return False
+
+        raise LLMBudgetExceededError(
+            f"LLM call budget exhausted before required phase '{phase}' "
+            f"({budget['calls_made']}/{max_calls})"
+        )
+
+    def get_budget_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Get current request budget and degradation metadata snapshot."""
+        budget = self._request_budget_ctx.get()
+        if not budget:
             return None
+
+        snapshot = dict(budget)
+        max_calls = snapshot.get("max_calls")
+        snapshot["remaining_calls"] = (max_calls - snapshot["calls_made"]) if max_calls is not None else None
+        snapshot["rate_limit"] = self.get_rate_limit_state()
+        return snapshot
+
+    def get_rate_limit_state(self) -> Dict[str, Any]:
+        """Return latest provider rate-limit state + cooldown timers."""
+        state = dict(self._last_rate_limit_state)
+        state["cooldown_until"] = self._openrouter_cooldown_until
+        state["now"] = time.monotonic()
+        return state
     
     def _validate_and_truncate_prompt(
         self, 
@@ -133,9 +224,11 @@ class LLMService:
         prompt: str, 
         system: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        phase: Optional[str] = None
     ) -> str:
         """Generate a response from the LLM."""
+        phase = phase or "unknown"
         try:
             # Validate and truncate if needed
             prompt, system = self._validate_and_truncate_prompt(prompt, system, max_tokens)
@@ -155,37 +248,57 @@ class LLMService:
             logger.info(f"  Prompt length: {len(prompt)}")
             logger.info(f"  Prompt preview: {prompt[:200]}...")
             logger.info("=" * 80)
-            
-            # Generate using provider
-            content = await self.provider.generate(
-                prompt=prompt,
-                system=system,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            logger.info(f"DEBUG LLM: ✅ Response received ({len(content)} chars)")
-            logger.info("=" * 80)
-            
-            return content
-            
-        except Exception as e:
-            if settings.ai_provider == "openrouter" and self._is_rate_limit_error(e):
-                logger.warning(
-                    "OpenRouter rate-limited. Attempting fallback with local Ollama provider."
-                )
-                fallback_provider = self._get_fallback_provider()
-                if fallback_provider:
-                    content = await fallback_provider.generate(
+
+            self._consume_budget_call(phase)
+            retry_attempts = settings.openrouter_free_retry_attempts if self.is_openrouter_free_mode() else 0
+            rate_limit_error: Optional[Exception] = None
+
+            for attempt in range(retry_attempts + 1):
+                await self._apply_openrouter_throttle()
+
+                try:
+                    content = await self.provider.generate(
                         prompt=prompt,
                         system=system,
                         temperature=temperature,
                         max_tokens=max_tokens
                     )
-                    logger.info(
-                        f"Fallback LLM response received from ollama ({len(content)} chars)"
-                    )
-                    return content
+                    self._update_rate_limit_state_from_provider()
+                    self._provider_status.update({
+                        "available": True,
+                        "rate_limited": False,
+                        "last_error": None
+                    })
+                    break
+                except Exception as e:
+                    if settings.ai_provider == "openrouter" and self._is_rate_limit_error(e):
+                        rate_limit_error = e
+                        self._record_rate_limit_hit(e, phase=phase)
+                        if attempt < retry_attempts:
+                            delay = min(
+                                settings.openrouter_free_retry_backoff_seconds * (2 ** attempt),
+                                settings.openrouter_free_retry_max_backoff_seconds
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        raise LLMRateLimitError(
+                            f"OpenRouter rate-limited after {retry_attempts + 1} attempts"
+                        ) from e
+                    raise
+            else:
+                raise LLMRateLimitError("OpenRouter rate-limited and no response was produced") from rate_limit_error
+            
+            logger.info(f"DEBUG LLM: ✅ Response received ({len(content)} chars)")
+            logger.info("=" * 80)
+            
+            if phase == "answer":
+                content = self.normalize_answer_output(content)
+
+            return content
+            
+        except Exception as e:
+            if isinstance(e, (LLMBudgetExceededError, LLMRateLimitError)):
+                raise
 
             error_msg = str(e).lower()
             if any(keyword in error_msg for keyword in ["context", "length", "token", "too long"]):
@@ -216,10 +329,115 @@ class LLMService:
     async def check_availability(self) -> bool:
         """Check if LLM provider is available."""
         try:
-            return await self.provider.check_availability()
+            available = await self.provider.check_availability()
+            self._provider_status.update({
+                "available": available,
+                "rate_limited": False,
+                "last_error": None
+            })
+            return available
         except Exception as e:
+            if settings.ai_provider == "openrouter" and self._is_rate_limit_error(e):
+                self._provider_status.update({
+                    "available": True,
+                    "rate_limited": True,
+                    "last_error": str(e),
+                    "last_rate_limit_at": time.time()
+                })
+                return True
             logger.error(f"LLM provider not available: {e}")
+            self._provider_status.update({
+                "available": False,
+                "rate_limited": False,
+                "last_error": str(e)
+            })
             return False
+
+    def get_provider_status(self) -> Dict[str, Any]:
+        """Get latest provider health + rate-limit status."""
+        status = dict(self._provider_status)
+        status["rate_limit"] = self.get_rate_limit_state()
+        return status
+
+    def get_effective_max_iterations(self, configured_iterations: int) -> int:
+        """Return max iterations adjusted for free mode."""
+        if self.is_openrouter_free_mode():
+            return min(configured_iterations, settings.openrouter_free_max_iterations)
+        return configured_iterations
+
+    def get_effective_verification_enabled(self, configured_enabled: bool) -> bool:
+        """Return verification flag adjusted for free mode."""
+        if self.is_openrouter_free_mode() and settings.openrouter_free_disable_verification:
+            return False
+        return configured_enabled
+
+    def _consume_budget_call(self, phase: str) -> None:
+        budget = self._request_budget_ctx.get()
+        if not budget:
+            return
+
+        max_calls = budget.get("max_calls")
+        if max_calls is not None and budget["calls_made"] >= max_calls:
+            budget["degraded"] = True
+            budget["degrade_reasons"].append(f"budget_exhausted_at_{phase}")
+            raise LLMBudgetExceededError(
+                f"LLM call budget exhausted during phase '{phase}' ({budget['calls_made']}/{max_calls})"
+            )
+
+        budget["calls_made"] += 1
+        budget["phase_calls"].append(phase)
+
+    async def _apply_openrouter_throttle(self) -> None:
+        if settings.ai_provider != "openrouter":
+            return
+
+        now = time.monotonic()
+        if now < self._openrouter_cooldown_until:
+            await asyncio.sleep(self._openrouter_cooldown_until - now)
+
+        min_delay = settings.openrouter_free_min_inter_call_delay_seconds if self.is_openrouter_free_mode() else 0.0
+        if min_delay > 0 and self._openrouter_last_call_at > 0:
+            elapsed = time.monotonic() - self._openrouter_last_call_at
+            if elapsed < min_delay:
+                await asyncio.sleep(min_delay - elapsed)
+
+        self._openrouter_last_call_at = time.monotonic()
+
+    def _update_rate_limit_state_from_provider(self) -> None:
+        if settings.ai_provider != "openrouter":
+            return
+
+        getter = getattr(self.provider, "get_rate_limit_state", None)
+        if not callable(getter):
+            return
+
+        state = getter() or {}
+        self._last_rate_limit_state = state
+        reset_after = state.get("reset_after")
+        if isinstance(reset_after, (float, int)) and reset_after > 0:
+            self._openrouter_cooldown_until = max(self._openrouter_cooldown_until, time.monotonic() + float(reset_after))
+
+    def _record_rate_limit_hit(self, error: Exception, phase: str) -> None:
+        self._update_rate_limit_state_from_provider()
+        cooldown = settings.openrouter_free_cooldown_seconds
+        reset_after = self._last_rate_limit_state.get("reset_after")
+        if isinstance(reset_after, (float, int)) and reset_after > 0:
+            cooldown = float(reset_after)
+
+        self._openrouter_cooldown_until = max(self._openrouter_cooldown_until, time.monotonic() + cooldown)
+        self._provider_status.update({
+            "available": True,
+            "rate_limited": True,
+            "last_error": str(error),
+            "last_rate_limit_at": time.time(),
+            "cooldown_until": self._openrouter_cooldown_until
+        })
+
+        budget = self._request_budget_ctx.get()
+        if budget:
+            budget["degraded"] = True
+            budget["rate_limit_hits"] += 1
+            budget["degrade_reasons"].append(f"rate_limited_at_{phase}")
     
     # Prompt templates for different agent phases
 
@@ -229,84 +447,96 @@ class LLMService:
     
     def create_plan_prompt(self, query: str) -> str:
         """Create prompt for the planning phase."""
-        return f"""Plan retrieval for this query.
-Query: {query}
-
-Output format:
-Needed Information:
-- ...
-Search Terms:
-- ...
-Relevant Source Types:
-- ...
-Potential Gaps:
-- ...
-
-Keep concise. Return ONLY this structure."""
+        return (
+            "Plan retrieval.\n"
+            f"Query: {query}\n"
+            "Return 4 bullets: needs, search terms, source types, gaps.\n"
+            "Be concise."
+        )
     
     def create_reason_prompt(self, query: str, retrieved_docs: str) -> str:
         """Create prompt for the reasoning phase."""
-        return f"""Evaluate answer readiness from context.
-Query: {query}
-Retrieved Context:
-{retrieved_docs}
-
-Output format:
-Relevance:
-...
-Sufficiency:
-...
-Gaps:
-- ...
-Decision:
-[answer|retrieve_more]
-
-Return ONLY this analysis."""
+        return (
+            "Judge if the context is enough to answer.\n"
+            f"Query: {query}\n"
+            f"Context:\n{retrieved_docs}\n"
+            "Return 4 bullets: relevance, sufficiency, gaps, decision (answer|retrieve_more).\n"
+            "Return only the analysis."
+        )
     
     def create_verify_prompt(self, query: str, answer: str, context: str) -> str:
         """Create prompt for verification phase."""
-        return f"""Verify whether answer is fully supported by context.
-Query: {query}
-Answer: {answer}
-Context:
-{context}
-
-YOU MUST respond in this exact format:
-Verified: [yes/no]
-Confidence score: [0.0-1.0]
-Issues: [none OR short semicolon-separated issues]
-
-Return ONLY these three lines."""
+        return (
+            "Check whether the answer is fully supported.\n"
+            f"Query: {query}\n"
+            f"Answer: {answer}\n"
+            f"Context:\n{context}\n"
+            "Reply exactly:\n"
+            "Verified: [yes/no]\n"
+            "Confidence score: [0.0-1.0]\n"
+            "Issues: [none or short semicolon-separated issues]"
+        )
     
     def create_answer_prompt(self, query: str, context: str) -> str:
         """Create prompt for final answer generation."""
-        return f"""Answer using ONLY the provided context.
-Question: {query}
-Context:
-{context}
+        return (
+            "Answer using only the context.\n"
+            f"Question: {query}\n"
+            f"Context:\n{context}\n"
+            "Be direct, factual, and cite claims inline.\n"
+            "Use the Source numbers exactly as shown. Each Source block is one document, even if it contains multiple chunks.\n"
+            "Do not cite chunk numbers.\n"
+            "If context is insufficient, say what is missing and note that web search is required.\n"
+            "Format:\n"
+            "Answer:\n"
+            "[answer with citations]\n\n"
+            "References:\n"
+            "- [reference 1]\n"
+            "- [reference 2]"
+        )
 
-Rules:
-1. Be direct and factual.
-2. Add in-text citations after factual claims.
-3. Include a References section.
-4. If context is insufficient, explicitly say what is missing and that web search is required before a final answer.
+    def normalize_answer_output(self, content: str) -> str:
+        """Strip answer envelope text while preserving the answer body."""
+        if not content:
+            return content
 
-Output structure:
-Answer:
-[answer with citations]
+        lines = content.strip().splitlines()
+        cleaned_lines = []
+        saw_content = False
 
-References:
-- [reference 1]
-- [reference 2]"""
+        for line in lines:
+            stripped = line.strip()
+            if not saw_content and not stripped:
+                continue
+
+            if not saw_content:
+                answer_match = re.match(r"^(?:answer|final answer)\s*:\s*(.*)$", stripped, re.IGNORECASE)
+                if answer_match:
+                    remainder = answer_match.group(1).strip()
+                    if remainder:
+                        cleaned_lines.append(remainder)
+                        saw_content = True
+                    continue
+
+            if re.match(r"^(?:references?|sources?)\s*:\s*$", stripped, re.IGNORECASE):
+                break
+
+            cleaned_lines.append(line)
+            if stripped:
+                saw_content = True
+
+        cleaned = "\n".join(cleaned_lines).strip()
+        return cleaned or content.strip()
     
     def create_refine_query_prompt(self, original_query: str, reasoning: str) -> str:
         """Create prompt for query refinement."""
-        return f"""Refine query for retrieval.
-Original Query: {original_query}
-Previous Reasoning: {reasoning}
-
-Return ONE improved query only.
-Keep same intent, add missing terms, max 20 words."""
+        return (
+            "Refine this retrieval query.\n"
+            f"Query: {original_query}\n"
+            f"Reasoning: {reasoning}\n"
+            "Return one improved query only.\n"
+            "Keep the same intent and stay under 20 words."
+        )
 
 
 # Global LLM service instance
