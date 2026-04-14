@@ -230,7 +230,7 @@ def test_response_models():
     try:
         from app.models.responses import (
             AgentResponse, IngestResponse,
-            RetrievedChunkTrace, VerificationTrace
+            RetrievedChunkTrace, VerificationTrace, AnswerSource
         )
         
         # Test RetrievedChunkTrace
@@ -258,6 +258,14 @@ def test_response_models():
         agent_resp = AgentResponse(
             query="Test query",
             answer="Test answer",
+            sources=[
+                AnswerSource(
+                    document_name="Test Document",
+                    source="test.pdf",
+                    chunk_id="test_chunk",
+                    similarity=0.95
+                )
+            ],
             retrieved_chunks_detail=[chunk_trace],
             verification_detail=[verify_trace],
             agent_steps=[{'description': 'Step 1', 'timestamp': 1.0}],
