@@ -58,8 +58,8 @@ class StateManager {
         this.config = {
             persistenceEnabled: true,
             persistenceKey: 'rag-app-state',
-            statusUpdateInterval: 5000,
-            minPollingInterval: 10000,  // Minimum 10 seconds to prevent excessive polling
+            statusUpdateInterval: 60000,
+            minPollingInterval: 60000,  // Minimum 60 seconds to prevent excessive polling
             ...config
         };
 

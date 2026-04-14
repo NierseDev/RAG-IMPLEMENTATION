@@ -21,8 +21,8 @@ class ChatApp {
         await this.loadSessions();
         await this.refreshStatus();
         
-        // Auto-refresh status every 10 seconds
-        setInterval(() => this.refreshStatus(), 10000);
+        // Auto-refresh status every minute
+        setInterval(() => this.refreshStatus(), 60000);
     }
 
     bindElements() {
@@ -37,6 +37,17 @@ class ChatApp {
         
         // Debug panels
         this.reasoningTraceEl = document.getElementById('reasoningTrace');
+        this.agentStatusValueEl = document.getElementById('agentStatusValue');
+        this.agentModelValueEl = document.getElementById('agentModelValue');
+        this.agentEmbeddingsValueEl = document.getElementById('agentEmbeddingsValue');
+        this.databaseConnectionValueEl = document.getElementById('databaseConnectionValue');
+        this.databaseChunksValueEl = document.getElementById('databaseChunksValue');
+        this.databaseDocumentsValueEl = document.getElementById('databaseDocumentsValue');
+        this.queryIterationsValueEl = document.getElementById('queryIterationsValue');
+        this.queryRetrievedValueEl = document.getElementById('queryRetrievedValue');
+        this.queryConfidenceValueEl = document.getElementById('queryConfidenceValue');
+        this.queryDurationValueEl = document.getElementById('queryDurationValue');
+        this.reasoningTraceValueEl = document.getElementById('reasoningTraceValue');
     }
 
     attachEventListeners() {
@@ -221,20 +232,7 @@ class ChatApp {
 
             // Remove loading message
             this.removeMessage(loadingId);
-
-            // Add assistant response
-            this.addMessage('assistant', data.answer, false, data);
-
-            // Update reasoning trace
-            this.updateReasoningTrace(data.reasoning_trace);
-
-            // Update query stats
-            this.updateQueryStats(data);
-
-            // Update session title if it's the first message
-            if (this.messages.length === 2) { // user + assistant
-                await this.updateSessionTitle(query);
-            }
+            await this.renderSuccessfulResponse(data, query);
 
         } catch (error) {
             console.error('Failed to send message:', error);
@@ -246,6 +244,36 @@ class ChatApp {
             this.isProcessing = false;
             this.sendBtn.disabled = false;
             this.chatInputEl.focus();
+        }
+    }
+
+    async renderSuccessfulResponse(data, query) {
+        try {
+            // Add assistant response first so the answer survives even if debug UI fails.
+            this.addMessage('assistant', data.answer, false, data);
+        } catch (error) {
+            console.error('Failed to render assistant response:', error);
+            this.addMessage('assistant', data.answer);
+        }
+
+        try {
+            this.updateReasoningTrace(data.reasoning_trace);
+        } catch (error) {
+            console.warn('Failed to update reasoning trace:', error);
+        }
+
+        try {
+            this.updateQueryStats(data);
+        } catch (error) {
+            console.warn('Failed to update query stats:', error);
+        }
+
+        try {
+            if (this.messages.length === 2) { // user + assistant
+                await this.updateSessionTitle(query);
+            }
+        } catch (error) {
+            console.warn('Failed to update session title:', error);
         }
     }
 
@@ -312,13 +340,16 @@ class ChatApp {
     clearChat() {
         this.messages = [];
         this.renderMessages();
-        this.reasoningTraceEl.innerHTML = '<p style="color: #95a5a6; font-size: 12px;">No active query</p>';
+        this.setText(this.reasoningTraceValueEl, 'No active query');
+        if (this.reasoningTraceEl) {
+            this.reasoningTraceEl.innerHTML = '<p style="color: #95a5a6; font-size: 12px;">No active query</p>';
+        }
         this.clearQueryStats();
     }
 
     formatMessage(content) {
         // Simple markdown formatting
-        let formatted = this.escapeHtml(content);
+        let formatted = this.escapeHtml(content ?? '');
         
         // Bold
         formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
@@ -341,7 +372,13 @@ class ChatApp {
                 ${sources.map((src, idx) => `
                     <div class="source-item">
                         <span class="source-number">[${idx + 1}]</span>
-                        <span class="source-text">${this.escapeHtml(src.document_name || 'Unknown')}</span>
+                        <span class="source-text">
+                            ${this.escapeHtml(
+                                typeof src === 'string'
+                                    ? src
+                                    : (src.document_name || src.title || src.filename || src.source || src.chunk_id || 'Unknown')
+                            )}
+                        </span>
                     </div>
                 `).join('')}
             </div>
@@ -397,82 +434,35 @@ class ChatApp {
     }
 
     renderAgentStatus(data) {
-        const section = document.querySelector('.debug-section:nth-child(1)');
-        if (!section) return;
-
         const isOnline = data?.status === 'online' || data?.status === 'healthy' || data?.healthy === true;
         const llmModel = data?.llm?.model || data?.llm_model || 'N/A';
         const embeddingModel = data?.embeddings?.model || data?.embedding_model || 'N/A';
-        const maxIterations = data?.configuration?.max_iterations || data?.max_iterations || 'N/A';
-
-        section.innerHTML = `
-            <h3>Agent Status</h3>
-            <div class="debug-item">
-                <span class="debug-label">Status:</span>
-                <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
-                    ${isOnline ? 'Online' : 'Offline'}
-                </span>
-            </div>
-            <div class="debug-item">
-                <span class="debug-label">LLM Model:</span>
-                <span class="debug-value">${llmModel}</span>
-            </div>
-            <div class="debug-item">
-                <span class="debug-label">Embeddings:</span>
-                <span class="debug-value">${embeddingModel}</span>
-            </div>
-            <div class="debug-item">
-                <span class="debug-label">Max Iterations:</span>
-                <span class="debug-value">${maxIterations}</span>
-            </div>
-        `;
+        this.setStatusValue(this.agentStatusValueEl, isOnline ? 'Online' : 'Offline', isOnline);
+        this.setText(this.agentModelValueEl, llmModel);
+        this.setText(this.agentEmbeddingsValueEl, embeddingModel);
     }
 
     renderDatabaseStatus(data) {
-        const section = document.querySelector('.debug-section:nth-child(2)');
-        if (!section) return;
-
-        const stats = data.statistics || {};
+        const stats = data?.statistics || {};
         const docStats = stats.document_status || {};
         const connected = data?.status === 'connected' || data?.healthy === true;
         const totalChunks = data?.chunks?.total ?? stats.total_chunks ?? 0;
         const totalDocuments = data?.documents?.total ?? stats.total_documents ?? 0;
-        const completed = data?.documents?.by_status?.completed ?? docStats.completed ?? 0;
-        const processing = data?.documents?.by_status?.processing ?? docStats.processing ?? 0;
 
-        section.innerHTML = `
-            <h3>Database Status</h3>
-            <div class="debug-item">
-                <span class="debug-label">Connection:</span>
-                <span class="status-badge ${connected ? 'status-online' : 'status-offline'}">
-                    ${connected ? 'Connected' : 'Disconnected'}
-                </span>
-            </div>
-            <div class="debug-item">
-                <span class="debug-label">Total Chunks:</span>
-                <span class="debug-value">${totalChunks}</span>
-            </div>
-            <div class="debug-item">
-                <span class="debug-label">Documents:</span>
-                <span class="debug-value">${totalDocuments}</span>
-            </div>
-            <div class="debug-item">
-                <span class="debug-label">Completed:</span>
-                <span class="debug-value">${completed}</span>
-            </div>
-            <div class="debug-item">
-                <span class="debug-label">Processing:</span>
-                <span class="debug-value">${processing}</span>
-            </div>
-        `;
+        this.setStatusValue(this.databaseConnectionValueEl, connected ? 'Connected' : 'Disconnected', connected);
+        this.setText(this.databaseChunksValueEl, totalChunks);
+        this.setText(this.databaseDocumentsValueEl, totalDocuments);
     }
 
     updateReasoningTrace(trace) {
+        if (!this.reasoningTraceEl) return;
         if (!trace || trace.length === 0) {
+            this.setText(this.reasoningTraceValueEl, 'No reasoning steps');
             this.reasoningTraceEl.innerHTML = '<p style="color: #95a5a6; font-size: 12px;">No reasoning steps</p>';
             return;
         }
 
+        this.setText(this.reasoningTraceValueEl, `${trace.length} step${trace.length === 1 ? '' : 's'}`);
         this.reasoningTraceEl.innerHTML = trace.map((step, idx) => `
             <div class="reasoning-step">
                 <div class="reasoning-step-type">Step ${idx + 1}: ${this.escapeHtml(typeof step === 'string' ? 'Reasoning' : (step.phase || step.type || 'Unknown'))}</div>
@@ -482,35 +472,41 @@ class ChatApp {
     }
 
     updateQueryStats(data) {
-        const section = document.querySelector('.debug-section:nth-child(4)');
-        if (!section) return;
-
         const iterations = data.iterations || data.iterations_used || 0;
         const retrieved = (data.sources || []).length;
         const confidence = data.confidence ? (data.confidence * 100).toFixed(1) + '%' : 'N/A';
         const duration = data.processing_time ? data.processing_time.toFixed(2) + 's' : 'N/A';
-
-        section.querySelector('.debug-item:nth-child(1) .debug-value').textContent = iterations;
-        section.querySelector('.debug-item:nth-child(2) .debug-value').textContent = retrieved;
-        section.querySelector('.debug-item:nth-child(3) .debug-value').textContent = confidence;
-        section.querySelector('.debug-item:nth-child(4) .debug-value').textContent = duration;
+        this.setText(this.queryIterationsValueEl, iterations);
+        this.setText(this.queryRetrievedValueEl, retrieved);
+        this.setText(this.queryConfidenceValueEl, confidence);
+        this.setText(this.queryDurationValueEl, duration);
     }
 
     clearQueryStats() {
-        const section = document.querySelector('.debug-section:nth-child(4)');
-        if (!section) return;
-
-        section.querySelectorAll('.debug-value').forEach(el => {
-            el.textContent = '-';
-        });
+        this.setText(this.queryIterationsValueEl, '-');
+        this.setText(this.queryRetrievedValueEl, '-');
+        this.setText(this.queryConfidenceValueEl, '-');
+        this.setText(this.queryDurationValueEl, '-');
     }
 
     // ==================== UTILITIES ====================
 
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = text == null ? '' : String(text);
         return div.innerHTML;
+    }
+
+    setText(element, value) {
+        if (!element) return;
+        element.textContent = value;
+    }
+
+    setStatusValue(element, value, isOnline) {
+        if (!element) return;
+        element.textContent = value;
+        element.classList.toggle('status-online', !!isOnline);
+        element.classList.toggle('status-offline', !isOnline);
     }
 
     formatDate(dateString) {

@@ -20,9 +20,9 @@ class IngestApp {
         await this.loadDocuments();
         await this.refreshStats();
         
-        // Auto-refresh every 5 seconds
-        setInterval(() => this.refreshDocuments(), 5000);
-        setInterval(() => this.refreshStats(), 10000);
+        // Auto-refresh every minute
+        setInterval(() => this.refreshDocuments(), 60000);
+        setInterval(() => this.refreshStats(), 60000);
     }
 
     bindElements() {
