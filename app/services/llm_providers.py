@@ -203,11 +203,12 @@ class OpenAIProvider:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
+        completion_tokens = max_tokens or self.max_output_tokens
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=temperature,
-            max_tokens=max_tokens or self.max_output_tokens
+            max_completion_tokens=completion_tokens
         )
         return response.choices[0].message.content or ""
 

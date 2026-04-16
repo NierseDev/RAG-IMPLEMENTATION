@@ -10,6 +10,7 @@ import re
 from app.core.config import settings
 from app.core.text_utils import estimate_tokens, truncate_to_token_limit
 from app.services.llm_providers import create_llm_provider
+from app.services.observability import build_run_metadata, log_run, traceable
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class LLMService:
             "plan": 120,
             "reason": 200,
             "verify": 160,
-            "answer": 320,
+            "answer": 240,
             "refine": 80
         }
         self._request_budget_ctx: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
@@ -219,6 +220,7 @@ class LLMService:
         
         return prompt, system
     
+    @traceable(name="llm.generate", run_type="llm")
     async def generate(
         self, 
         prompt: str, 
@@ -232,6 +234,18 @@ class LLMService:
         try:
             # Validate and truncate if needed
             prompt, system = self._validate_and_truncate_prompt(prompt, system, max_tokens)
+            log_run(
+                "llm.generate",
+                build_run_metadata(
+                    provider=settings.ai_provider,
+                    model=settings.current_llm_model,
+                    phase=phase,
+                    temperature=temperature,
+                    max_tokens=max_tokens or self.max_output_tokens,
+                    prompt_tokens=estimate_tokens(prompt),
+                    system_tokens=estimate_tokens(system) if system else 0
+                )
+            )
             
             # Add default system message if none provided
             if not system:
@@ -306,7 +320,7 @@ class LLMService:
                 # Try with more aggressive truncation
                 try:
                     logger.info("Retrying with more aggressive truncation")
-                    safe_limit = int(self.max_context_tokens * 0.6)
+                    safe_limit = min(int(self.max_context_tokens * 0.6), 12000)
                     
                     if system:
                         system = truncate_to_token_limit(system, safe_limit // 3)
@@ -321,7 +335,7 @@ class LLMService:
                     return content
                 except Exception as retry_error:
                     logger.error(f"Retry failed: {retry_error}")
-                    return "I apologize, but the context is too large for me to process. Please try with a smaller query or fewer documents."
+                    return "I apologize, but the source texts are too large for me to process. Please try with a smaller query or fewer documents."
             
             logger.error(f"Error generating LLM response: {e}")
             raise
@@ -445,54 +459,92 @@ class LLMService:
         """Return per-phase max_tokens budget."""
         return self.phase_max_tokens.get(phase, fallback)
     
-    def create_plan_prompt(self, query: str) -> str:
+    def _session_memory_block(self, conversation_context: Optional[str]) -> str:
+        """Format session memory for prompt injection."""
+        if not conversation_context:
+            return ""
+
+        return (
+            "Session memory (reference only; not evidence):\n"
+            f"{conversation_context}\n"
+            "Use this to resolve follow-up references and maintain continuity.\n"
+        )
+
+    def create_plan_prompt(self, query: str, conversation_context: Optional[str] = None) -> str:
         """Create prompt for the planning phase."""
         return (
             "Plan retrieval.\n"
+            f"{self._session_memory_block(conversation_context)}"
             f"Query: {query}\n"
             "Return 4 bullets: needs, search terms, source types, gaps.\n"
             "Be concise."
         )
     
-    def create_reason_prompt(self, query: str, retrieved_docs: str) -> str:
+    def create_reason_prompt(
+        self,
+        query: str,
+        retrieved_docs: str,
+        conversation_context: Optional[str] = None
+    ) -> str:
         """Create prompt for the reasoning phase."""
         return (
             "Judge if the context is enough to answer.\n"
+            f"{self._session_memory_block(conversation_context)}"
             f"Query: {query}\n"
             f"Context:\n{retrieved_docs}\n"
             "Return 4 bullets: relevance, sufficiency, gaps, decision (answer|retrieve_more).\n"
             "Return only the analysis."
         )
     
-    def create_verify_prompt(self, query: str, answer: str, context: str) -> str:
+    def create_verify_prompt(
+        self,
+        query: str,
+        answer: str,
+        context: str,
+        conversation_context: Optional[str] = None
+    ) -> str:
         """Create prompt for verification phase."""
         return (
-            "Check whether the answer is fully supported.\n"
+            "Check whether the answer's claims are supported by the context.\n"
+            f"{self._session_memory_block(conversation_context)}"
             f"Query: {query}\n"
             f"Answer: {answer}\n"
             f"Context:\n{context}\n"
+            "Allow concise paraphrase, simplification, and synthesis when the meaning matches the context.\n"
+            "Only mark unsupported claims when the answer adds facts, numbers, entities, or conclusions not grounded in the context.\n"
             "Reply exactly:\n"
             "Verified: [yes/no]\n"
             "Confidence score: [0.0-1.0]\n"
             "Issues: [none or short semicolon-separated issues]"
         )
     
-    def create_answer_prompt(self, query: str, context: str) -> str:
+    def create_answer_prompt(
+        self,
+        query: str,
+        context: str,
+        conversation_context: Optional[str] = None
+    ) -> str:
         """Create prompt for final answer generation."""
         return (
-            "Answer using only the context.\n"
+            "Answer using only the provided source texts and evidence.\n"
+            f"{self._session_memory_block(conversation_context)}"
             f"Question: {query}\n"
-            f"Context:\n{context}\n"
+            f"Source texts and evidence:\n{context}\n"
             "Be direct, factual, and cite claims inline.\n"
+            "Keep the answer to 2-4 short sentences.\n"
+            "Prefer a single compact paragraph unless bullets make it clearer.\n"
+            "Paraphrase and simplify the source when helpful; do not copy wording unless an exact term matters.\n"
+            "Synthesize across sources when they agree instead of repeating each source verbatim.\n"
+            "Keep the answer plain text. Do not use markdown emphasis like **bold**.\n"
             "Use the Source numbers exactly as shown. Each Source block is one document, even if it contains multiple chunks.\n"
+            "For web sources, cite the webpage title or URL shown in the source data.\n"
             "Do not cite chunk numbers.\n"
-            "If context is insufficient, say what is missing and note that web search is required.\n"
+            "If the source texts are thin, use any available web evidence blocks; if none exist, say what is missing in one short sentence.\n"
             "Format:\n"
             "Answer:\n"
             "[answer with citations]\n\n"
             "References:\n"
-            "- [reference 1]\n"
-            "- [reference 2]"
+            "- [reference 1]"
         )
 
     def normalize_answer_output(self, content: str) -> str:
@@ -526,16 +578,34 @@ class LLMService:
                 saw_content = True
 
         cleaned = "\n".join(cleaned_lines).strip()
-        return cleaned or content.strip()
+        cleaned = cleaned or content.strip()
+        return re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
     
-    def create_refine_query_prompt(self, original_query: str, reasoning: str) -> str:
+    def create_refine_query_prompt(
+        self,
+        original_query: str,
+        reasoning: str,
+        conversation_context: Optional[str] = None,
+        current_query: Optional[str] = None,
+        refinement_mode: str = "broaden"
+    ) -> str:
         """Create prompt for query refinement."""
+        current_search_query = current_query or original_query
+        if refinement_mode not in {"broaden", "narrow"}:
+            refinement_mode = "broaden"
+
         return (
-            "Refine this retrieval query.\n"
-            f"Query: {original_query}\n"
+            "Rewrite this retrieval query with a small edit.\n"
+            f"{self._session_memory_block(conversation_context)}"
+            f"Original query: {original_query}\n"
+            f"Current search query: {current_search_query}\n"
+            f"Refinement mode: {refinement_mode}\n"
             f"Reasoning: {reasoning}\n"
-            "Return one improved query only.\n"
-            "Keep the same intent and stay under 20 words."
+            "Return one new query only.\n"
+            "Keep the same intent.\n"
+            "If mode is broaden, add 1-3 helpful keywords or context.\n"
+            "If mode is narrow, remove filler and keep the core terms.\n"
+            "Stay under 20 words."
         )
 
 

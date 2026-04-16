@@ -100,6 +100,48 @@ class Settings(BaseSettings):
         default="gpt-4.1-mini",
         description="OpenAI model slug"
     )
+
+    # Tavily Web Search Configuration
+    tavily_api_key: Optional[str] = Field(default=None, description="Tavily API key")
+    tavily_base_url: str = Field(
+        default="https://api.tavily.com/search",
+        description="Tavily search API base URL"
+    )
+    tavily_search_depth: Literal["basic", "advanced"] = Field(
+        default="basic",
+        description="Tavily search depth"
+    )
+    tavily_include_answer: bool = Field(
+        default=False,
+        description="Include Tavily answer summary in search response"
+    )
+    tavily_include_raw_content: bool = Field(
+        default=False,
+        description="Include Tavily raw content in search response"
+    )
+    tavily_max_results: int = Field(
+        default=5,
+        ge=1,
+        description="Maximum Tavily results to request"
+    )
+
+    # Observability
+    langsmith_enabled: bool = Field(
+        default=False,
+        description="Enable LangSmith tracing when the dependency is installed"
+    )
+    langsmith_api_key: Optional[str] = Field(
+        default=None,
+        description="LangSmith API key"
+    )
+    langsmith_project: str = Field(
+        default="rag-implementation",
+        description="LangSmith project name"
+    )
+    langsmith_endpoint: str = Field(
+        default="https://api.smith.langchain.com",
+        description="LangSmith API endpoint"
+    )
     
     # Embedding Provider (can be different from LLM provider)
     embedding_provider: Literal["ollama", "openai"] = Field(
