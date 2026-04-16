@@ -44,13 +44,14 @@ result = await sql_tool.execute("How many documents do we have?")
 
 ### 2. Web Search Tool (`web_search_tool.py`)
 
-Web search fallback using DuckDuckGo when RAG doesn't have answers.
+Web search fallback using Tavily first, with DuckDuckGo as a fallback when local retrieval returns no results.
 
 **Features:**
-- DuckDuckGo Instant Answer API integration
+- Tavily Search API integration
+- DuckDuckGo fallback
 - Attribution metadata for trust
-- Fallback detection logic
-- Result formatting for agent context
+- Last-resort fallback detection logic
+- Explicit context-block formatting for agent context
 - Async HTTP client
 
 **Attribution:**
@@ -76,8 +77,6 @@ should_fallback = web_search_tool.should_fallback_to_web(
 
 **Fallback Conditions:**
 - No RAG results found
-- Low RAG confidence (<0.5)
-- Insufficient RAG results (<2)
 
 ---
 

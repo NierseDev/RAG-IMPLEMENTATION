@@ -12,6 +12,8 @@ A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with mul
 - **✅ Verification System**: Validates answers against retrieved context
 - **🌐 REST API**: Clean FastAPI endpoints with auto-generated docs
 - **🖥️ Debug Web UI**: Real-time visualization of agent reasoning
+- **🧮 Formula-Aware Ingestion**: Standalone equation chunks preserved with metadata
+- **🧠 Memory-Safe PDF Processing**: Large PDFs switch to a lighter Docling path
 - **📤 Batch Upload**: Multiple file upload with duplicate detection
 - **🔄 Smart Duplicate Handling**: Skip, Replace, or Append modes for existing files
 - **🛠️ Intelligent Tool Routing**: Query classification with automatic tool selection (Sprint 4)
@@ -24,7 +26,7 @@ A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with mul
 - **Frontend**: Web UI with chat interface
 - **Backend**: FastAPI with REST endpoints
 - **Vector Database**: Supabase (PostgreSQL + pgvector)
-- **AI**: Ollama (local LLM + embeddings)
+- **AI**: OpenAI and OpenRouter for production cloud usage, Ollama for local production or fallback
 - **Document Processing**: Docling (multi-format support)
 
 **Core Components:**
@@ -71,6 +73,11 @@ cp .env.example .env
 # Optional AI providers:
 # - OPENROUTER_API_KEY / OPENROUTER_MODEL
 # - OPENAI_API_KEY / OPENAI_MODEL
+# Optional web search / observability:
+# - TAVILY_API_KEY
+# - LANGSMITH_ENABLED
+# - LANGSMITH_API_KEY
+# - LANGSMITH_PROJECT
 ```
 
 #### Step 5: Start the Server
