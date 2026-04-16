@@ -13,22 +13,7 @@ class UIComponents {
     static createSpinner(size = 'medium', color = '#3498db') {
         const spinner = document.createElement('div');
         spinner.className = `spinner spinner-${size}`;
-        
-        const sizeMap = {
-            small: '16px',
-            medium: '24px',
-            large: '40px'
-        };
-        
-        spinner.style.cssText = `
-            display: inline-block;
-            width: ${sizeMap[size]};
-            height: ${sizeMap[size]};
-            border: 2px solid #f3f3f3;
-            border-top: 2px solid ${color};
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        `;
+        spinner.style.setProperty('--spinner-color', color);
         
         return spinner;
     }
@@ -46,34 +31,6 @@ class UIComponents {
         
         const toast = document.createElement('div');
         toast.className = `toast-notification toast-${type}`;
-        
-        const colors = {
-            success: { bg: '#d5f4e6', border: '#27ae60', text: '#1e7e4f' },
-            error: { bg: '#fadbd8', border: '#e74c3c', text: '#c0392b' },
-            warning: { bg: '#feebc8', border: '#f39c12', text: '#d68910' },
-            info: { bg: '#d6eaf8', border: '#3498db', text: '#2471a3' }
-        };
-        
-        const color = colors[type] || colors.info;
-        
-        toast.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            min-width: 300px;
-            max-width: 500px;
-            padding: 16px 20px;
-            background: ${color.bg};
-            border-left: 4px solid ${color.border};
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            color: ${color.text};
-            font-size: 14px;
-            font-weight: 500;
-            z-index: 10000;
-            animation: slideInRight 0.3s ease-out;
-        `;
-        
         toast.textContent = message;
         document.body.appendChild(toast);
         
@@ -103,54 +60,19 @@ class UIComponents {
         // Create overlay
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
-        overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 9999;
-            animation: fadeIn 0.2s;
-        `;
         
         // Create modal
         const modal = document.createElement('div');
         modal.className = 'modal-dialog';
-        modal.style.cssText = `
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
-            max-width: 500px;
-            width: 90%;
-            max-height: 80vh;
-            overflow: hidden;
-            animation: scaleIn 0.2s;
-        `;
         
         // Modal header
         const header = document.createElement('div');
-        header.style.cssText = `
-            padding: 20px;
-            border-bottom: 1px solid #e1e8ed;
-            font-size: 18px;
-            font-weight: 600;
-            color: #2c3e50;
-        `;
+        header.className = 'modal-header';
         header.textContent = title;
         
         // Modal body
         const body = document.createElement('div');
-        body.style.cssText = `
-            padding: 20px;
-            overflow-y: auto;
-            max-height: 400px;
-            font-size: 14px;
-            color: #2c3e50;
-        `;
+        body.className = 'modal-body';
         
         if (typeof content === 'string') {
             body.innerHTML = content;
@@ -160,31 +82,12 @@ class UIComponents {
         
         // Modal footer
         const footer = document.createElement('div');
-        footer.style.cssText = `
-            padding: 15px 20px;
-            border-top: 1px solid #e1e8ed;
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-        `;
-        
-        const buttonStyle = `
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background 0.2s;
-        `;
+        footer.className = 'modal-footer';
         
         if (showCancel) {
             const cancelBtn = document.createElement('button');
             cancelBtn.textContent = cancelText;
-            cancelBtn.style.cssText = buttonStyle + `
-                background: #ecf0f1;
-                color: #2c3e50;
-            `;
+            cancelBtn.className = 'modal-button modal-button--secondary';
             cancelBtn.onclick = () => {
                 if (onCancel) onCancel();
                 hide();
@@ -194,10 +97,7 @@ class UIComponents {
         
         const confirmBtn = document.createElement('button');
         confirmBtn.textContent = confirmText;
-        confirmBtn.style.cssText = buttonStyle + `
-            background: #3498db;
-            color: white;
-        `;
+        confirmBtn.className = 'modal-button modal-button--primary';
         confirmBtn.onclick = () => {
             if (onConfirm) onConfirm();
             hide();
@@ -240,26 +140,6 @@ class UIComponents {
         badge.className = `status-badge status-${type}`;
         badge.textContent = status;
         
-        const colors = {
-            success: { bg: '#d5f4e6', text: '#22543d' },
-            error: { bg: '#fed7d7', text: '#742a2a' },
-            warning: { bg: '#feebc8', text: '#744210' },
-            info: { bg: '#d6eaf8', text: '#2471a3' },
-            neutral: { bg: '#e2e8f0', text: '#4a5568' }
-        };
-        
-        const color = colors[type] || colors.neutral;
-        
-        badge.style.cssText = `
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 500;
-            background: ${color.bg};
-            color: ${color.text};
-        `;
-        
         return badge;
     }
     
@@ -272,7 +152,7 @@ class UIComponents {
     static confirm(message, onConfirm, onCancel = null) {
         const modal = this.createModal({
             title: 'Confirmation',
-            content: `<p style="margin: 0;">${message}</p>`,
+            content: `<p class="modal-message">${message}</p>`,
             confirmText: 'Confirm',
             cancelText: 'Cancel',
             onConfirm,
@@ -283,59 +163,6 @@ class UIComponents {
         modal.show();
     }
 }
-
-// Add CSS animations to document
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-    }
-    
-    @keyframes slideInRight {
-        from {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-        to {
-            transform: translateX(0);
-            opacity: 1;
-        }
-    }
-    
-    @keyframes slideOutRight {
-        from {
-            transform: translateX(0);
-            opacity: 1;
-        }
-        to {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-    }
-    
-    @keyframes fadeIn {
-        from { opacity: 0; }
-        to { opacity: 1; }
-    }
-    
-    @keyframes fadeOut {
-        from { opacity: 1; }
-        to { opacity: 0; }
-    }
-    
-    @keyframes scaleIn {
-        from {
-            transform: scale(0.9);
-            opacity: 0;
-        }
-        to {
-            transform: scale(1);
-            opacity: 1;
-        }
-    }
-`;
-document.head.appendChild(style);
 
 // Export for ES6 modules
 if (typeof module !== 'undefined' && module.exports) {

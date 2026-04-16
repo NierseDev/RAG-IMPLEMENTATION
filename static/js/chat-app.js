@@ -95,7 +95,7 @@ class ChatApp {
 
     renderSessions() {
         if (this.sessions.length === 0) {
-            this.chatHistoryEl.innerHTML = '<p style="color: #95a5a6; font-size: 12px; padding: 10px;">No chat history</p>';
+            this.chatHistoryEl.innerHTML = '<p class="muted-text chat-empty">No chat history</p>';
             return;
         }
 
@@ -211,7 +211,7 @@ class ChatApp {
 
         // Show loading state
         const loadingId = this.addMessage('assistant', '<div class="loading"></div>', true);
-        this.reasoningTraceEl.innerHTML = '<p style="color: #95a5a6; font-size: 12px;">Processing query...</p>';
+        this.reasoningTraceEl.innerHTML = '<p class="muted-text reasoning-placeholder">Processing query...</p>';
 
         try {
             const response = await fetch('/query/agentic', {
@@ -342,7 +342,7 @@ class ChatApp {
         this.renderMessages();
         this.setText(this.reasoningTraceValueEl, 'No active query');
         if (this.reasoningTraceEl) {
-            this.reasoningTraceEl.innerHTML = '<p style="color: #95a5a6; font-size: 12px;">No active query</p>';
+            this.reasoningTraceEl.innerHTML = '<p class="muted-text reasoning-placeholder">No active query</p>';
         }
         this.clearQueryStats();
     }
@@ -367,7 +367,7 @@ class ChatApp {
         if (!sources || sources.length === 0) return '';
         
         return `
-            <div class="message-sources">
+                <div class="message-sources">
                 <div class="sources-header">📚 Sources:</div>
                 ${sources.map((src, idx) => `
                     <div class="source-item">
@@ -379,6 +379,9 @@ class ChatApp {
                                     : (src.document_name || src.title || src.filename || src.source || src.chunk_id || 'Unknown')
                             )}
                         </span>
+                        ${typeof src === 'object' && src && src.url ? `
+                            <div class="source-url">${this.escapeHtml(src.url)}</div>
+                        ` : ''}
                     </div>
                 `).join('')}
             </div>
@@ -458,7 +461,7 @@ class ChatApp {
         if (!this.reasoningTraceEl) return;
         if (!trace || trace.length === 0) {
             this.setText(this.reasoningTraceValueEl, 'No reasoning steps');
-            this.reasoningTraceEl.innerHTML = '<p style="color: #95a5a6; font-size: 12px;">No reasoning steps</p>';
+            this.reasoningTraceEl.innerHTML = '<p class="muted-text reasoning-placeholder">No reasoning steps</p>';
             return;
         }
 

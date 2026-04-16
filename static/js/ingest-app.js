@@ -145,14 +145,14 @@ class IngestApp {
         const progressEl = document.getElementById('uploadProgress');
         if (progressEl) {
             progressEl.textContent = `Uploading: ${filename}...`;
-            progressEl.style.display = 'block';
+            progressEl.classList.remove('hidden');
         }
     }
 
     hideUploadProgress() {
         const progressEl = document.getElementById('uploadProgress');
         if (progressEl) {
-            progressEl.style.display = 'none';
+            progressEl.classList.add('hidden');
         }
     }
 
@@ -187,9 +187,11 @@ class IngestApp {
         if (this.documents.length === 0) {
             this.docTableBodyEl.innerHTML = `
                 <tr>
-                    <td colspan="6" style="text-align: center; padding: 40px; color: #95a5a6;">
-                        <div style="font-size: 48px; margin-bottom: 10px;">📄</div>
-                        <div>No documents uploaded yet</div>
+                    <td colspan="6">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📄</div>
+                            <div class="empty-state-text">No documents uploaded yet</div>
+                        </div>
                     </td>
                 </tr>
             `;
@@ -250,15 +252,15 @@ class IngestApp {
             const data = await response.json();
             
             const details = `
-                <div style="text-align: left;">
+                <div class="document-details">
                     <h3>${this.escapeHtml(data.filename)}</h3>
-                    <hr style="margin: 10px 0;">
+                    <hr>
                     <p><strong>Status:</strong> ${data.status}</p>
                     <p><strong>Size:</strong> ${this.formatFileSize(data.file_size)}</p>
                     <p><strong>Chunks:</strong> ${data.chunk_count}</p>
                     <p><strong>Upload Date:</strong> ${new Date(data.upload_date).toLocaleString()}</p>
                     <p><strong>Hash:</strong> <code>${data.file_hash}</code></p>
-                    ${data.error_message ? `<p style="color: #e74c3c;"><strong>Error:</strong> ${this.escapeHtml(data.error_message)}</p>` : ''}
+                    ${data.error_message ? `<p class="document-error"><strong>Error:</strong> ${this.escapeHtml(data.error_message)}</p>` : ''}
                 </div>
             `;
             

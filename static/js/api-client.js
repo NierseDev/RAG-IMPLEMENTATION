@@ -7,12 +7,13 @@
  */
 
 /**
- * @typedef {Object} QueryOptions
- * @property {number} [top_k=5] - Number of documents to retrieve
- * @property {string} [filter_source] - Filter results by source
- * @property {boolean} [trace=false] - Include detailed reasoning trace
- * @property {number} [timeout=30000] - Request timeout in milliseconds
- */
+   * @typedef {Object} QueryOptions
+   * @property {number} [top_k=5] - Number of documents to retrieve
+   * @property {string} [filter_source] - Filter results by source
+   * @property {number} [session_id] - Chat session ID for multi-turn memory
+   * @property {boolean} [trace=false] - Include detailed reasoning trace
+   * @property {number} [timeout=30000] - Request timeout in milliseconds
+   */
 
 /**
  * @typedef {Object} IngestOptions
@@ -341,9 +342,11 @@ class APIClient {
    * });
    */
   async query(question, options = {}) {
+    const sessionId = options.session_id ?? this.sessionId;
     const body = {
       query: question,
       top_k: options.top_k || 5,
+      ...(sessionId !== null && sessionId !== undefined && { session_id: sessionId }),
       ...(options.filter_source && { filter_source: options.filter_source })
     };
 

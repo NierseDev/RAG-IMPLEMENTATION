@@ -86,7 +86,7 @@ class AgentHierarchyPanel {
                     <button class="expand-btn" data-agent-id="main" title="Expand/Collapse">
                         ${expanded ? '▼' : '▶'}
                     </button>
-                    <div class="agent-type-badge" style="background: #667eea;">Main Agent</div>
+                    <div class="agent-type-badge agent-type-main">Main Agent</div>
                     <div class="agent-status">${mainAgent.status.toUpperCase()}</div>
                 </div>
                 ${expanded ? this.renderAgentContent(mainAgent) : ''}
@@ -138,13 +138,7 @@ class AgentHierarchyPanel {
     renderSubAgentCard(agent, index) {
         const expanded = this.currentHierarchy?.expandedAgents?.[agent.id] ?? true;
         const statusClass = agent.status === 'completed' ? 'status-completed' : 'status-running';
-        const typeColors = {
-            'full_document': '#8b5cf6',
-            'comparison': '#06b6d4',
-            'extraction': '#10b981',
-            'search': '#f59e0b'
-        };
-        const color = typeColors[agent.type] || '#6b7280';
+        const typeClass = this.getAgentTypeBadgeClass(agent.type);
 
         let html = `
             <div class="agent-card sub-agent ${statusClass}">
@@ -153,7 +147,7 @@ class AgentHierarchyPanel {
                     <button class="expand-btn" data-agent-id="${agent.id}" title="Expand/Collapse">
                         ${expanded ? '▼' : '▶'}
                     </button>
-                    <div class="agent-type-badge" style="background: ${color};">${agent.type}</div>
+                    <div class="agent-type-badge ${typeClass}">${agent.type}</div>
                     <div class="agent-status">${agent.status.toUpperCase()}</div>
                 </div>
                 ${expanded ? this.renderAgentContent(agent) : ''}
@@ -222,6 +216,16 @@ class AgentHierarchyPanel {
         html += '</div>';
         html += '</div>';
         return html;
+    }
+
+    getAgentTypeBadgeClass(type) {
+        if (!type) {
+            return 'agent-type-default';
+        }
+
+        const normalized = String(type).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+        const allowed = new Set(['full_document', 'comparison', 'extraction', 'search']);
+        return allowed.has(normalized) ? `agent-type-${normalized}` : 'agent-type-default';
     }
 
     updateStats(hierarchy) {
