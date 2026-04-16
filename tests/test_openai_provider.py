@@ -3,6 +3,7 @@ import pytest
 from app.core.config import settings
 import app.services.llm as llm_module
 from app.services.llm import LLMService
+from app.services.llm_providers import OpenAIProvider
 
 
 @pytest.mark.asyncio
@@ -42,3 +43,37 @@ def test_openai_provider_requires_api_key(monkeypatch):
 
     with pytest.raises(ValueError, match="OPENAI_API_KEY not set in environment"):
         LLMService()
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_uses_max_completion_tokens(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return type(
+                "Response",
+                (),
+                {"choices": [type("Choice", (), {"message": type("Message", (), {"content": "ok"})()})()]}
+            )()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeClient)
+
+    provider = OpenAIProvider(
+        api_key="key",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4.1-mini",
+        max_output_tokens=256,
+    )
+
+    result = await provider.generate("hello", max_tokens=64)
+
+    assert result == "ok"
+    assert "max_completion_tokens" in captured
+    assert captured["max_completion_tokens"] == 64
+    assert "max_tokens" not in captured

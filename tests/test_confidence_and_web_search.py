@@ -178,7 +178,11 @@ async def test_duckduckgo_html_search_parses_and_normalizes_results(monkeypatch)
     async def fake_instant_answer_api(query):
         return []
 
+    async def fake_tavily(query, max_results):
+        return []
+
     monkeypatch.setattr(web_search_tool, "client", FakeClient())
+    monkeypatch.setattr(web_search_tool, "_search_tavily", fake_tavily)  # type: ignore[method-assign]
     monkeypatch.setattr(web_search_tool, "_instant_answer_api", fake_instant_answer_api)
 
     result = await web_search_tool.execute("example query", max_results=2)
@@ -189,3 +193,23 @@ async def test_duckduckgo_html_search_parses_and_normalizes_results(monkeypatch)
     assert result["results"][0]["url"] == "https://example.com/a"
     assert result["results"][0]["snippet"] == "First snippet."
     assert result["attribution"]["result_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_web_search_context_blocks_are_explicit(monkeypatch):
+    result = {
+        "title": "**Tavily** Result",
+        "snippet": "Result text with **bold** markup.",
+        "url": "https://example.com/tavily",
+        "source": "Tavily",
+        "type": "tavily_result",
+        "score": 0.99,
+    }
+
+    block = web_search_tool.build_context_block(result, 1)
+
+    assert "=== Web Result 1 ===" in block
+    assert "title: Tavily Result" in block
+    assert "snippet: Result text with bold markup." in block
+    assert "url: https://example.com/tavily" in block
+    assert "**" not in block

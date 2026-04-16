@@ -9,14 +9,15 @@ from app.services.verification import verification_service
 
 def _sample_result(
     chunk_id: str = "doc_page_12_chunk_3",
-    source: str = "sample_doc.pdf"
+    source: str = "sample_doc.pdf",
+    text: str = "Sample evidence text about machine learning evaluation metrics."
 ) -> RetrievalResult:
     return RetrievalResult(
         chunk_id=chunk_id,
         source=source,
         ai_provider="ollama",
         embedding_model="mxbai-embed-large",
-        text="Sample evidence text about machine learning evaluation metrics.",
+        text=text,
         similarity=0.87,
         created_at=datetime.now(timezone.utc)
     )
@@ -29,9 +30,10 @@ def test_verify_prompt_has_explicit_format_requirements():
     assert "Issues: [none or short semicolon-separated issues]" in prompt
 
 
-def test_answer_prompt_mentions_web_search_when_context_insufficient():
+def test_answer_prompt_mentions_web_search_when_source_texts_insufficient():
     prompt = llm_service.create_answer_prompt("What is X?", "Context text")
-    assert "web search is required" in prompt.lower()
+    assert "web evidence blocks" in prompt.lower()
+    assert "2-4 short sentences" in prompt
     assert "Format:" in prompt
     assert "References:" in prompt
     assert "Do not cite chunk numbers." in prompt
@@ -60,6 +62,28 @@ def test_source_references_use_document_titles_when_available():
     assert refs[0]["source"] == "sample_doc.pdf"
     assert refs[1]["document_name"] == "another_doc"
     assert refs[1]["chunk_id"] == "chunk-2"
+
+
+def test_source_references_use_web_titles_and_urls():
+    refs = retrieval_service.build_source_references(
+        [
+            RetrievalResult(
+                chunk_id="web_1_1",
+                source="web:example.com",
+                ai_provider="web_search",
+                embedding_model="tavily_result",
+                text="Web evidence",
+                similarity=0.55,
+                created_at=datetime.now(timezone.utc),
+                title="Example Article",
+                url="https://example.com/article",
+            )
+        ]
+    )
+
+    assert refs[0]["document_name"] == "Example Article"
+    assert refs[0]["title"] == "Example Article"
+    assert refs[0]["url"] == "https://example.com/article"
 
 
 def test_parse_verification_supports_new_format():
@@ -114,6 +138,18 @@ def test_context_formatting_respects_max_results():
     assert "Source 2" not in context
 
 
+def test_context_formatting_truncates_large_chunk_text():
+    long_text = "important evidence " * 200
+    context = retrieval_service.format_context(
+        [_sample_result(text=long_text)],
+        max_tokens=120,
+        max_result_tokens=30
+    )
+
+    assert "..." in context
+    assert len(context) < len(long_text)
+
+
 def test_web_results_are_transformed_into_retrieval_context_chunks():
     agent = AgenticRAG(enable_tools=False)
     web_results = [
@@ -128,9 +164,11 @@ def test_web_results_are_transformed_into_retrieval_context_chunks():
     transformed = agent._web_results_to_retrieval_results(web_results, iteration=1)
 
     assert len(transformed) == 1
-    assert transformed[0].source == "web:Example"
+    assert transformed[0].source == "web:example.com"
+    assert transformed[0].title == "Doc A"
     assert transformed[0].ai_provider == "web_search"
     assert "https://example.com/a" in transformed[0].text
+    assert transformed[0].url == "https://example.com/a"
 
 
 def test_web_results_are_truncated_and_capped_for_agent_context():
