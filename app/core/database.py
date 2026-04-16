@@ -45,7 +45,8 @@ class SupabaseClient:
                 "text": chunk.text,
                 "ai_provider": chunk.ai_provider,
                 "embedding_model": chunk.embedding_model,
-                "embedding": chunk.embedding
+                "embedding": chunk.embedding,
+                "metadata": chunk.metadata
             }
             
             result = self.client.table("rag_chunks").insert(data).execute()
@@ -64,7 +65,8 @@ class SupabaseClient:
                     "text": chunk.text,
                     "ai_provider": chunk.ai_provider,
                     "embedding_model": chunk.embedding_model,
-                    "embedding": chunk.embedding
+                    "embedding": chunk.embedding,
+                    "metadata": chunk.metadata
                 }
                 for chunk in chunks
             ]

@@ -7,6 +7,7 @@ Integration: Workflow Orchestrator (Sprint 4, Group 3, Task 2)
 from typing import Optional, Dict, Any, List, Tuple
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from app.models.entities import AgentState, RetrievalResult
 from app.services.llm import llm_service, LLMBudgetExceededError, LLMRateLimitError
 from app.services.retrieval import retrieval_service
@@ -14,6 +15,8 @@ from app.services.verification import verification_service
 from app.services.agent_router import agent_router, ToolType
 from app.services.workflow_orchestrator import orchestrator, Workflow, ExecutionMode, RetryConfig
 from app.services.tool_handlers import create_tool_handlers
+from app.services.observability import build_run_metadata, log_run, traceable
+from app.core.database import get_supabase_client
 from app.core.config import settings
 import logging
 
@@ -27,8 +30,8 @@ class AgenticRAG:
     Integration: Workflow Orchestrator for intelligent tool sequencing (Sprint 4, Group 3, Task 2).
     """
 
-    WEB_CONTEXT_MAX_RESULTS = 2
-    WEB_CONTEXT_MAX_CHARS = 320
+    WEB_CONTEXT_MAX_RESULTS = 5
+    WEB_CONTEXT_MAX_CHARS = 500
     
     def __init__(
         self,
@@ -89,27 +92,101 @@ class AgenticRAG:
             f"AgenticRAG initialized (max_iter={self.max_iterations}, min_conf={self.min_confidence}, "
             f"verify={self.enable_verification}, free_mode={self.free_mode_enabled}, tools={self.enable_tools})"
         )
+
+    async def _load_session_context(self, session_id: int, max_messages: int = 6) -> Optional[str]:
+        """Load recent chat history for a session."""
+        try:
+            client = get_supabase_client()
+            result = client.table("chat_messages") \
+                .select("role, content, created_at") \
+                .eq("session_id", session_id) \
+                .order("created_at", desc=True) \
+                .limit(max_messages) \
+                .execute()
+
+            messages = list(reversed(result.data or []))
+            if not messages:
+                return None
+
+            lines: List[str] = []
+            for message in messages[-max_messages:]:
+                content = str(message.get("content") or "").strip()
+                if not content:
+                    continue
+                if len(content) > 400:
+                    content = content[:397].rstrip() + "..."
+                role = str(message.get("role") or "").strip().lower()
+                label = "User" if role == "user" else "Assistant" if role == "assistant" else "Message"
+                lines.append(f"{label}: {content}")
+
+            if not lines:
+                return None
+
+            context = "\n".join(lines)
+            if len(context) > 1600:
+                return context[:1597].rstrip() + "..."
+            return context
+        except Exception as e:
+            logger.warning(f"Could not load session history for session {session_id}: {e}")
+            return None
+
+    def _compose_contextual_query(self, query: str, conversation_context: Optional[str]) -> str:
+        """Blend the current query with session memory for retrieval and routing."""
+        if not conversation_context:
+            return query
+
+        return (
+            f"Conversation history:\n{conversation_context}\n\n"
+            f"Current user question: {query}"
+        )
     
+    @traceable(name="agent.query", run_type="chain")
     async def query(
         self,
         query: str,
         top_k: Optional[int] = None,
         filter_source: Optional[str] = None,
         metadata_filters: Optional[Dict[str, Any]] = None,
-        filter_logic: str = "AND"
+        filter_logic: str = "AND",
+        session_id: Optional[int] = None
     ) -> AgentState:
         """
         Execute agentic RAG query with full reasoning loop.
         Sprint 4: Supports metadata filtering.
         """
         start_time = time.time()
+        log_run(
+            "agent.query",
+            build_run_metadata(
+                query=query,
+                top_k=top_k,
+                filter_source=filter_source,
+                metadata_filters=metadata_filters,
+                filter_logic=filter_logic,
+                session_id=session_id,
+                max_iterations=self.max_iterations,
+                verification_enabled=self.enable_verification,
+                tools_enabled=self.enable_tools,
+                free_mode=self.free_mode_enabled
+            )
+        )
         
         # Initialize agent state
         state = AgentState(
             iteration=0,
             original_query=query,
-            current_query=query
+            current_query=query,
+            search_query=query
         )
+
+        if session_id:
+            state.conversation_context = await self._load_session_context(session_id)
+            state.current_query = self._compose_contextual_query(state.search_query, state.conversation_context)
+            if state.conversation_context:
+                logger.info(
+                    f"Loaded session memory for session {session_id} "
+                    f"({len(state.conversation_context)} chars)"
+                )
         
         logger.info(f"Starting agentic query: {query}")
         
@@ -142,7 +219,8 @@ class AgenticRAG:
                 state.add_reasoning("RETRIEVE", "No relevant documents found")
                 if state.iteration < self.max_iterations and not self.free_mode_enabled:
                     # Try query refinement
-                    state.current_query = await self._refine_query(state)
+                    refined_query = await self._refine_query(state)
+                    state.current_query = self._compose_contextual_query(refined_query, state.conversation_context)
                     state.add_reasoning("REFINE", f"Refined query: {state.current_query}")
                     continue
                 else:
@@ -200,15 +278,27 @@ class AgenticRAG:
             else:
                 # Continue iteration - refine query
                 logger.info(f"DEBUG: Continuing to next iteration (current: {state.iteration})")
-                state.add_reasoning("DECIDE", "Need more information, refining query")
                 if self.free_mode_enabled:
                     state.add_reasoning("DEGRADED_MODE", "Skipped REFINE phase due to free-mode single-pass policy")
                     state.decision = "answer"
                     state.final_answer = answer
                     state.sources = retrieval_service.extract_sources(state.retrieved_docs)
                     break
-                state.current_query = await self._refine_query(state)
-                state.add_reasoning("REFINE", f"New query: {state.current_query}")
+                last_verification = state.verification_results[-1] if state.verification_results else {}
+                evidence_score = max(
+                    last_verification.get('evidence_score', 0.0),
+                    last_verification.get('grounding_score', 0.0),
+                    last_verification.get('retrieval_strength', 0.0)
+                )
+                recent_docs = state.retrieved_docs[-settings.verify_context_chunks:] if state.retrieved_docs else []
+                if recent_docs:
+                    evidence_score = max(evidence_score, self._calculate_retrieval_strength(recent_docs))
+
+                refine_mode, refine_summary = self._build_refinement_strategy(state, evidence_score, last_verification)
+                state.add_reasoning("REFINE", f"Strategy: {refine_mode} ({refine_summary})")
+                state.search_query = await self._refine_query(state, refine_mode, refine_summary)
+                state.current_query = self._compose_contextual_query(state.search_query, state.conversation_context)
+                state.add_reasoning("REFINE", f"New search query: {state.search_query}")
         
         # If max iterations reached without answer
         if not state.final_answer:
@@ -240,7 +330,7 @@ class AgenticRAG:
                 state.add_reasoning("ROUTE", f"{routing_decision.reasoning}")
                 logger.info(f"Routing decision: {routing_decision.query_type.value} (confidence: {routing_decision.confidence:.2f})")
             
-            prompt = llm_service.create_plan_prompt(state.current_query)
+            prompt = llm_service.create_plan_prompt(state.original_query, state.conversation_context)
             plan = await llm_service.generate(
                 prompt,
                 temperature=0.5,
@@ -260,7 +350,7 @@ class AgenticRAG:
         metadata_filters: Optional[Dict[str, Any]] = None,
         filter_logic: str = "AND"
     ) -> list[RetrievalResult]:
-        """Phase 2: Execute retrieval with optional web-context enrichment."""
+        """Phase 2: Execute retrieval with web fallback only when local docs are empty."""
         try:
             # Standard RAG retrieval with metadata filters (Sprint 4)
             results = await retrieval_service.retrieve(
@@ -271,15 +361,15 @@ class AgenticRAG:
                 filter_logic=filter_logic
             )
 
-            # Enrich retrieved context with web search when local context is weak
-            if self.enable_tools and self.web_search_tool:
-                should_enrich = self.web_search_tool.should_fallback_to_web(
-                    rag_confidence=state.confidence or 0.0,
-                    rag_results_count=len(results)
+            # Web search is a last resort: only run when local retrieval returns nothing.
+            if not results and self.enable_tools and self.web_search_tool:
+                should_fallback = self.web_search_tool.should_fallback_to_web(
+                    rag_confidence=0.0,
+                    rag_results_count=0
                 )
 
-                if should_enrich:
-                    logger.info("Using web search to enrich retrieval context")
+                if should_fallback:
+                    logger.info("Using web search as last-resort fallback")
                     web_response = await self.web_search_tool.execute(
                         state.current_query,
                         max_results=self.WEB_CONTEXT_MAX_RESULTS
@@ -291,11 +381,11 @@ class AgenticRAG:
                             results.extend(web_context_docs)
                             state.add_reasoning(
                                 "WEB_SEARCH",
-                                f"Added {len(web_context_docs)} web context snippets for supplemental evidence"
+                                f"Added {len(web_context_docs)} web evidence snippets after empty local retrieval"
                             )
                     else:
                         error = web_response.get('error', 'unknown web search error')
-                        state.add_reasoning("WEB_SEARCH", f"Web context enrichment unavailable: {error}")
+                        state.add_reasoning("WEB_SEARCH", f"Web fallback unavailable: {error}")
 
             return results
         except Exception as e:
@@ -315,41 +405,76 @@ class AgenticRAG:
             if not snippet:
                 continue
 
-            title = (item.get('title') or 'Web Result').strip()
-            url = (item.get('url') or '').strip()
-            source = (item.get('source') or 'DuckDuckGo').strip()
-            text = self._truncate_web_context_text(
-                title=title,
-                snippet=snippet,
-                url=url
-            )
+            source = self._web_source_label(item)
+            text = self.web_search_tool.build_context_block(item, idx) if self.web_search_tool else self._build_web_context_block(item, idx)
 
             transformed.append(
                 RetrievalResult(
                     chunk_id=f"web_{iteration}_{idx}",
-                    source=f"web:{source}",
+                    source=source,
                     ai_provider="web_search",
-                    embedding_model="duckduckgo",
+                    embedding_model=(item.get("type") or source).lower(),
                     text=text,
                     similarity=0.55,
+                    title=item.get("title"),
+                    url=item.get("url"),
                     created_at=datetime.now(timezone.utc)
                 )
             )
 
         return transformed
 
-    def _truncate_web_context_text(self, title: str, snippet: str, url: str) -> str:
-        """Keep web fallback snippets compact so they do not crowd out RAG context."""
-        parts = [title.strip(), snippet.strip()]
-        if url:
-            parts.append(f"URL: {url.strip()}")
+    def _estimate_retrieval_strength(self, results: List[RetrievalResult]) -> float:
+        """Estimate how strong local retrieval is from the best retrieved chunks."""
+        if not results:
+            return 0.0
+        top_results = sorted(results, key=lambda item: item.similarity, reverse=True)[:3]
+        return sum(item.similarity for item in top_results) / len(top_results)
 
-        text = "\n".join(part for part in parts if part)
+    def _web_source_label(self, item: Dict[str, Any]) -> str:
+        """Create a readable source label for web results."""
+        url = str(item.get("url") or "").strip()
+        if url:
+            parsed = urlparse(url)
+            if parsed.netloc:
+                return f"web:{parsed.netloc}"
+
+        source = str(item.get("source") or "DuckDuckGo").strip()
+        return f"web:{source}"
+
+    def _build_web_context_block(self, item: Dict[str, Any], index: int) -> str:
+        """Build a compact explicit context block when the web tool is disabled."""
+        title = self._truncate_web_context_value(item.get("title") or "Web result")
+        snippet = self._truncate_web_context_value(item.get("snippet") or "No snippet available")
+        url = self._truncate_web_context_value(item.get("url") or "N/A")
+        source = (item.get("source") or "Unknown").strip()
+        score = item.get("score")
+        query = self._truncate_web_context_value(item.get("search_query") or "")
+
+        lines = [
+            f"=== Web Result {index} ===",
+            f"title: {title}",
+            f"source: {source}",
+            f"url: {url}",
+        ]
+        if query:
+            lines.append(f"query: {query}")
+        if score is not None:
+            lines.append(f"score: {score}")
+        lines.append(f"snippet: {snippet}")
+        lines.append(f"=== End Web Result {index} ===")
+
+        block = "\n".join(lines)
+        if len(block) <= self.WEB_CONTEXT_MAX_CHARS:
+            return block
+        return block[: self.WEB_CONTEXT_MAX_CHARS - 3].rstrip() + "..."
+
+    def _truncate_web_context_value(self, value: Any) -> str:
+        text = str(value).strip()
         if len(text) <= self.WEB_CONTEXT_MAX_CHARS:
             return text
-
         return text[: self.WEB_CONTEXT_MAX_CHARS - 3].rstrip() + "..."
-    
+
     async def _reason_phase(self, state: AgentState) -> str:
         """Phase 3: Reason about retrieved information."""
         try:
@@ -363,7 +488,11 @@ class AgenticRAG:
                 max_tokens=settings.max_context_tokens // 4,
                 max_results=settings.reason_context_chunks
             )
-            prompt = llm_service.create_reason_prompt(state.current_query, context)
+            prompt = llm_service.create_reason_prompt(
+                state.original_query,
+                context,
+                state.conversation_context
+            )
             reasoning = await llm_service.generate(
                 prompt,
                 temperature=0.5,
@@ -388,7 +517,11 @@ class AgenticRAG:
                 max_tokens=settings.max_context_tokens // 3,
                 max_results=settings.answer_context_chunks
             )
-            prompt = llm_service.create_answer_prompt(state.original_query, context)
+            prompt = llm_service.create_answer_prompt(
+                state.original_query,
+                context,
+                state.conversation_context
+            )
             answer = await llm_service.generate(
                 prompt,
                 temperature=0.7,
@@ -438,6 +571,27 @@ class AgenticRAG:
             evidence_score = max(evidence_score, self._calculate_retrieval_strength(recent_docs))
         logger.info(f"  Evidence score: {evidence_score:.2f}")
 
+        should_continue, quality_label, quality_reasons = self._should_continue_after_answer(
+            state,
+            answer,
+            evidence_score,
+            last_verification
+        )
+        logger.info(f"  Answer quality: {quality_label}")
+        if quality_reasons:
+            logger.info(f"  Quality reasons: {', '.join(quality_reasons)}")
+
+        if should_continue:
+            state.add_reasoning(
+                "DECIDE",
+                f"Weak answer; refining query ({'; '.join(quality_reasons)})"
+            )
+            logger.info(
+                f"  DECISION: continue (weak answer; iteration {state.iteration} < {self.max_iterations})"
+            )
+            logger.info("=" * 80)
+            return "continue"
+
         # Decision logic
         if state.confidence and state.confidence >= self.min_confidence:
             logger.info(f"  DECISION: answer (confidence {state.confidence:.2f} >= {self.min_confidence:.2f})")
@@ -454,12 +608,6 @@ class AgenticRAG:
             logger.info("=" * 80)
             return "answer"
 
-        # Check if we have enough information
-        if len(state.retrieved_docs) >= 10:  # Enough documents retrieved
-            logger.info(f"  DECISION: answer (enough documents: {len(state.retrieved_docs)} >= 10)")
-            logger.info("=" * 80)
-            return "answer"
-        
         # Check for information gaps
         has_gaps, gaps = verification_service.detect_information_gaps(
             state.current_query,
@@ -485,30 +633,183 @@ class AgenticRAG:
 
         top_docs = sorted(docs, key=lambda doc: doc.similarity, reverse=True)[:3]
         return sum(doc.similarity for doc in top_docs) / len(top_docs)
+
+    def _build_refinement_strategy(
+        self,
+        state: AgentState,
+        evidence_score: float,
+        verification: Dict[str, Any]
+    ) -> Tuple[str, str]:
+        """Choose whether the next query should broaden or narrow."""
+        query = (state.search_query or state.original_query or "").strip()
+        query_length = len(query.split())
+        issues = [str(issue).lower() for issue in verification.get("issues", []) if issue]
+        verification_failed = not bool(verification.get("verified", False))
+        low_evidence = evidence_score < 0.45
+        weak_grounding = verification.get("grounding_score", 0.0) < 0.45
+        weak_retrieval = verification.get("retrieval_strength", 0.0) < 0.45
+
+        if not state.retrieved_docs or low_evidence or "no grounded evidence available" in issues:
+            return "broaden", "add a few related keywords or missing context"
+
+        if any(token in " ".join(issues) for token in ["unsupported", "hallucination", "low evidence", "weak evidence"]):
+            return "narrow", "remove filler and focus on the core terms"
+
+        if verification_failed and (weak_grounding or weak_retrieval):
+            return "broaden", "add a small amount of extra context"
+
+        if query_length > 10:
+            return "narrow", "shorten the query to the essential terms"
+
+        return "broaden", "add one or two helpful keywords"
+
+    def _should_continue_after_answer(
+        self,
+        state: AgentState,
+        answer: str,
+        evidence_score: float,
+        verification: Dict[str, Any]
+    ) -> Tuple[bool, str, List[str]]:
+        """Decide whether a weak answer should trigger another refinement pass."""
+        answer_text = (answer or "").strip()
+        confidence = state.confidence or 0.0
+        verified = bool(verification.get('verified', False))
+        issues = [str(issue) for issue in verification.get('issues', []) if issue]
+
+        grounding_score = verification.get('grounding_score', 0.0) or 0.0
+        retrieval_strength = verification.get('retrieval_strength', 0.0) or 0.0
+        strongest_evidence = max(evidence_score, grounding_score, retrieval_strength)
+
+        good_confidence = self.min_confidence
+        good_evidence = max(0.65, self.min_confidence)
+        great_confidence = max(self.min_confidence + 0.1, 0.85)
+        great_evidence = max(0.8, good_evidence)
+
+        reasons: List[str] = []
+        if not answer_text:
+            reasons.append("empty answer")
+        if confidence < good_confidence:
+            reasons.append(f"confidence {confidence:.2f} below {good_confidence:.2f}")
+        if strongest_evidence < good_evidence:
+            reasons.append(f"evidence {strongest_evidence:.2f} below {good_evidence:.2f}")
+        if issues:
+            reasons.append("verification still has issues")
+
+        if not reasons:
+            if confidence >= great_confidence and strongest_evidence >= great_evidence and verified:
+                return False, "great", []
+            return False, "good", []
+
+        if state.iteration >= self.max_iterations or self.free_mode_enabled:
+            return False, "weak", reasons
+
+        return True, "weak", reasons
     
-    async def _refine_query(self, state: AgentState) -> str:
+    async def _refine_query(
+        self,
+        state: AgentState,
+        refinement_mode: str,
+        refinement_summary: str
+    ) -> str:
         """Refine the query based on reasoning."""
         try:
             if not llm_service.can_execute_phase("refine", optional=True):
-                return state.current_query
+                return state.search_query or state.original_query
+
+            base_query = state.search_query or state.original_query
 
             reasoning_summary = (
                 " | ".join(state.reasoning[-settings.refine_context_chunks:])
                 if state.reasoning
                 else "No results found"
             )
-            prompt = llm_service.create_refine_query_prompt(state.original_query, reasoning_summary)
+            prompt = llm_service.create_refine_query_prompt(
+                state.original_query,
+                reasoning_summary,
+                state.conversation_context,
+                current_query=base_query,
+                refinement_mode=refinement_mode
+            )
             refined = await llm_service.generate(
                 prompt,
                 temperature=0.5,
                 max_tokens=llm_service.get_phase_max_tokens("refine", 100),
                 phase="refine"
             )
-            return refined.strip()
+            return self._normalize_refined_query(
+                base_query,
+                refined.strip(),
+                refinement_mode,
+                refinement_summary
+            )
         except Exception as e:
             logger.error(f"Error refining query: {e}")
-            # Fallback: slightly rephrase original query
-            return f"{state.original_query} information"
+            return self._fallback_refined_query(
+                state.search_query or state.original_query,
+                refinement_mode,
+                refinement_summary
+            )
+
+    def _normalize_refined_query(
+        self,
+        base_query: str,
+        refined_query: str,
+        refinement_mode: str,
+        refinement_summary: str
+    ) -> str:
+        """Ensure refinement changes the query in a meaningful way."""
+        cleaned = " ".join((refined_query or "").split()).strip(" .")
+        if not cleaned:
+            return self._fallback_refined_query(base_query, refinement_mode, refinement_summary)
+
+        if self._normalized_query_text(cleaned) == self._normalized_query_text(base_query):
+            return self._fallback_refined_query(base_query, refinement_mode, refinement_summary)
+
+        return cleaned
+
+    def _fallback_refined_query(
+        self,
+        base_query: str,
+        refinement_mode: str,
+        refinement_summary: str
+    ) -> str:
+        """Rewrite the query deterministically when the model does not change it."""
+        base_query = " ".join(base_query.split()).strip()
+        if not base_query:
+            return refinement_summary
+
+        if refinement_mode == "narrow":
+            stopwords = {
+                "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
+                "have", "how", "if", "in", "is", "it", "its", "of", "on", "or", "that",
+                "the", "their", "there", "these", "this", "to", "was", "were", "what",
+                "when", "where", "which", "who", "why", "with", "will", "would", "can",
+                "could", "should", "may", "might", "about", "into", "over", "under",
+                "than", "then", "also", "more", "most", "please", "tell", "me", "give",
+                "show", "find", "information", "details"
+            }
+            core_terms = [word for word in base_query.split() if word.lower().strip(".,!?") not in stopwords]
+            if len(core_terms) >= 2:
+                return " ".join(core_terms[:8])
+            if len(base_query.split()) <= 4:
+                return f"{base_query} specifics".strip()
+            return f"{' '.join(base_query.split()[:6])} key terms".strip()
+
+        additions = []
+        summary_text = refinement_summary.lower()
+        if "add" in summary_text or "context" in summary_text:
+            additions.append("details")
+        if "keyword" in summary_text or "terms" in summary_text:
+            additions.append("key terms")
+        if "shorten" in summary_text:
+            additions.append("specifics")
+        if not additions:
+            additions.append("details")
+        return f"{base_query} {' '.join(additions)}".strip()
+
+    def _normalized_query_text(self, text: str) -> str:
+        """Normalize query text for change detection."""
+        return " ".join(text.lower().split()).strip(" .,!?:;")
 
     def _build_rate_limited_fallback_answer(self, state: AgentState) -> str:
         """Create deterministic fallback answer when LLM answering is unavailable."""

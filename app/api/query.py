@@ -17,6 +17,7 @@ from app.services.agent import create_agent
 from app.services.retrieval import retrieval_service
 from app.services.query_service import query_service
 from app.services.llm import llm_service
+from app.core.config import settings
 from app.core.database import db, get_supabase_client
 import logging
 
@@ -38,9 +39,10 @@ async def _build_answer_sources(docs):
     if not docs:
         return []
 
+    recent_docs = list(docs)[-settings.answer_context_chunks:]
     seen = set()
     unique_sources = []
-    for doc in sorted(docs, key=lambda item: item.similarity, reverse=True):
+    for doc in recent_docs:
         if doc.source in seen:
             continue
         seen.add(doc.source)
@@ -48,7 +50,7 @@ async def _build_answer_sources(docs):
 
     display_names = await asyncio.gather(*(db.get_document_display_name(source) for source in unique_sources))
     document_names = dict(zip(unique_sources, display_names))
-    return retrieval_service.build_source_references(docs, document_names=document_names)
+    return retrieval_service.build_source_references(recent_docs, document_names=document_names)
 
 
 @router.post("/agentic", response_model=AgentResponse)
@@ -72,7 +74,8 @@ async def agentic_query(request: QueryRequest):
                 top_k=request.top_k,
                 filter_source=request.filter_source,
                 metadata_filters=request.metadata_filters,
-                filter_logic=request.filter_logic
+                filter_logic=request.filter_logic,
+                session_id=request.session_id
             )
             degraded_mode = llm_service.get_budget_snapshot()
         
@@ -106,7 +109,8 @@ async def agentic_query(request: QueryRequest):
                 source=doc.source,
                 text=doc.text[:500],  # Truncate for response size
                 similarity=doc.similarity,
-                iteration_retrieved=1  # Could track which iteration retrieved this
+                iteration_retrieved=1,  # Could track which iteration retrieved this
+                metadata=doc.metadata
             ))
         
         # Convert verification results to detailed traces
@@ -214,7 +218,8 @@ async def simple_query(request: SimpleQueryRequest):
             {
                 "source": r.source,
                 "similarity": r.similarity,
-                "text": r.text[:200] + "..." if len(r.text) > 200 else r.text
+                "text": r.text[:200] + "..." if len(r.text) > 200 else r.text,
+                "metadata": r.metadata,
             }
             for r in results
         ]

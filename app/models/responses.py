@@ -41,6 +41,7 @@ class RetrievedChunkTrace(BaseModel):
     text: str
     similarity: float
     iteration_retrieved: int
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class VerificationTrace(BaseModel):
@@ -57,10 +58,13 @@ class AnswerSource(BaseModel):
     """Structured source reference for answer responses."""
     document_name: str
     source: str
+    title: Optional[str] = None
+    url: Optional[str] = None
     chunk_id: Optional[str] = None
     similarity: Optional[float] = None
     page: Optional[str] = None
     created_at: Optional[datetime] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentResponse(BaseModel):

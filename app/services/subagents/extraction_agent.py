@@ -161,7 +161,11 @@ Looking for: {', '.join(extraction_keywords) if extraction_keywords else 'All re
             
             from app.services.llm import llm_service
             
-            base_prompt = llm_service.create_reason_prompt(state.current_query, context)
+            base_prompt = llm_service.create_reason_prompt(
+                state.current_query,
+                context,
+                state.conversation_context
+            )
             extraction_prompt = f"""{base_prompt}
 
 EXTRACTION FOCUS:
@@ -201,7 +205,11 @@ EXTRACTION FOCUS:
             
             from app.services.llm import llm_service
             
-            base_prompt = llm_service.create_answer_prompt(state.original_query, context)
+            base_prompt = llm_service.create_answer_prompt(
+                state.original_query,
+                context,
+                state.conversation_context
+            )
             extraction_prompt = f"""{base_prompt}
 
 EXTRACTION OUTPUT FORMAT:

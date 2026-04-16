@@ -2,7 +2,7 @@
 Semantic chunking service that respects document structure.
 Implements intelligent chunking based on paragraphs, sections, and headings.
 """
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 import re
 from app.core.text_utils import estimate_tokens
 from app.core.config import settings
@@ -44,22 +44,35 @@ class SemanticChunker:
         
         # Split into semantic units
         units = self._split_into_semantic_units(text) if preserve_structure else [text]
-        
-        # Group units into chunks
-        chunks = self._group_units_into_chunks(units)
+        chunks = self.chunk_fragments(
+            [{"text": unit, "metadata": self._build_unit_metadata(unit)} for unit in units]
+        )
         
         # Post-process: handle oversized chunks
         final_chunks = []
-        for chunk in chunks:
-            if estimate_tokens(chunk) > self.max_chunk_size:
+        for chunk_text, chunk_meta in chunks:
+            if chunk_meta.get("content_type") == "formula":
+                final_chunks.append(chunk_text)
+                continue
+
+            if estimate_tokens(chunk_text) > self.max_chunk_size:
                 # Split oversized chunk with overlap
-                sub_chunks = self._split_oversized_chunk(chunk)
+                sub_chunks = self._split_oversized_chunk(chunk_text)
                 final_chunks.extend(sub_chunks)
             else:
-                final_chunks.append(chunk)
+                final_chunks.append(chunk_text)
         
         logger.info(f"Created {len(final_chunks)} semantic chunks from {len(units)} units")
         return [c.strip() for c in final_chunks if c.strip()]
+
+    def chunk_fragments(self, fragments: List[Dict[str, Any]]) -> List[Tuple[str, dict]]:
+        """Chunk pre-split fragments while keeping formulas atomic."""
+        if not fragments:
+            return []
+
+        units = [self._normalize_fragment(fragment) for fragment in fragments]
+        units = [unit for unit in units if unit["text"]]
+        return self._group_units_into_chunks(units)
     
     def _split_into_semantic_units(self, text: str) -> List[str]:
         """
@@ -76,6 +89,7 @@ class SemanticChunker:
         
         # 3. Code blocks
         code_block_pattern = r'```[\s\S]*?```|`[^`]+`'
+        formula_pattern = r'(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\begin\{(?:equation|equation\*|align|align\*|gather|gather\*|multline|multline\*)\}[\s\S]+?\\end\{(?:equation|equation\*|align|align\*|gather|gather\*|multline|multline\*)\})'
         
         # Split by double newlines (paragraph boundaries)
         paragraphs = re.split(r'\n\s*\n', text)
@@ -94,6 +108,11 @@ class SemanticChunker:
             if re.search(code_block_pattern, para):
                 units.append(para)
                 continue
+
+            # Check if it's a display formula or equation block
+            if re.search(formula_pattern, para, re.MULTILINE) or self._is_formula_unit(para):
+                units.append(para)
+                continue
             
             # Check if it's a list
             lines = para.split('\n')
@@ -106,22 +125,66 @@ class SemanticChunker:
         
         return units
     
-    def _group_units_into_chunks(self, units: List[str]) -> List[str]:
+    def _normalize_fragment(self, fragment: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize a fragment dictionary."""
+        text = str(fragment.get("text", "")).strip()
+        metadata = dict(fragment.get("metadata", {}) or {})
+        if not metadata.get("content_type"):
+            metadata["content_type"] = "formula" if self._is_formula_unit(text) else "prose"
+        return {"text": text, "metadata": metadata}
+
+    def _build_unit_metadata(self, unit: str) -> Dict[str, Any]:
+        """Build metadata for a semantic unit."""
+        if self._is_formula_unit(unit):
+            return {
+                "content_type": "formula",
+                "is_formula": True,
+                "formula_block": True,
+            }
+        return {"content_type": "prose"}
+
+    def _is_formula_unit(self, text: str) -> bool:
+        """Heuristic formula detector for semantic units."""
+        stripped = text.strip()
+        if not stripped:
+            return False
+        if stripped.startswith("$$") and stripped.endswith("$$"):
+            return True
+        if stripped.startswith("\\[") and stripped.endswith("\\]"):
+            return True
+        if stripped.startswith("\\begin{"):
+            return True
+
+        word_count = len(re.findall(r"\b\w+\b", stripped))
+        symbol_count = sum(1 for ch in stripped if ch in "=^_±×÷∑∫∂→←≠≤≥√")
+        latex_hits = len(re.findall(r"\\[A-Za-z]+", stripped))
+        return word_count <= 40 and (symbol_count >= 2 or latex_hits >= 1)
+
+    def _group_units_into_chunks(self, units: List[Dict[str, Any]]) -> List[Tuple[str, dict]]:
         """
         Group semantic units into chunks that fit within target size.
         Keep related units together when possible.
         """
-        chunks = []
-        current_chunk = []
+        chunks: List[Tuple[str, dict]] = []
+        current_chunk: List[Dict[str, Any]] = []
         current_tokens = 0
         
         for i, unit in enumerate(units):
-            unit_tokens = estimate_tokens(unit)
+            unit_text = unit["text"]
+            unit_tokens = estimate_tokens(unit_text)
+            unit_meta = unit.get("metadata", {})
+            if unit_meta.get("content_type") == "formula":
+                if current_chunk:
+                    chunks.append(self._finalize_chunk(current_chunk))
+                    current_chunk = []
+                    current_tokens = 0
+                chunks.append(self._finalize_chunk([unit]))
+                continue
             
             # Check if adding this unit would exceed target
             if current_tokens + unit_tokens > self.target_chunk_size and current_chunk:
                 # Save current chunk
-                chunks.append('\n\n'.join(current_chunk))
+                chunks.append(self._finalize_chunk(current_chunk))
                 current_chunk = []
                 current_tokens = 0
             
@@ -130,20 +193,34 @@ class SemanticChunker:
             current_tokens += unit_tokens
             
             # Check for natural boundaries (headings)
-            is_heading = unit.strip().startswith('#')
-            next_is_heading = (i + 1 < len(units) and units[i + 1].strip().startswith('#'))
+            is_heading = unit_text.strip().startswith('#')
+            next_is_heading = (i + 1 < len(units) and units[i + 1]["text"].strip().startswith('#'))
             
             # Break chunk at heading boundaries if we're near target size
             if is_heading and next_is_heading and current_tokens > self.target_chunk_size * 0.7:
-                chunks.append('\n\n'.join(current_chunk))
+                chunks.append(self._finalize_chunk(current_chunk))
                 current_chunk = []
                 current_tokens = 0
         
         # Add remaining chunk
         if current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
+            chunks.append(self._finalize_chunk(current_chunk))
         
         return chunks
+
+    def _finalize_chunk(self, units: List[Dict[str, Any]]) -> Tuple[str, dict]:
+        """Finalize a chunk from semantic units."""
+        text = '\n\n'.join(unit["text"] for unit in units if unit["text"].strip())
+        metadata = {
+            "content_type": "formula" if len(units) == 1 and units[0]["metadata"].get("content_type") == "formula" else "prose",
+            "fragment_count": len(units),
+            "contains_formula": any(unit["metadata"].get("content_type") == "formula" for unit in units),
+        }
+        if len(units) == 1:
+            metadata.update(units[0]["metadata"])
+        else:
+            metadata["content_types"] = sorted({unit["metadata"].get("content_type", "unknown") for unit in units})
+        return text, metadata
     
     def _split_oversized_chunk(self, chunk: str) -> List[str]:
         """

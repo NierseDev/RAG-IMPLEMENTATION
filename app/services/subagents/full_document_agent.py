@@ -133,7 +133,11 @@ class FullDocumentAgent(SubAgent):
             from app.core.config import settings
             
             # Enhanced prompt for full-document reasoning
-            base_prompt = llm_service.create_reason_prompt(state.current_query, context)
+            base_prompt = llm_service.create_reason_prompt(
+                state.current_query,
+                context,
+                state.conversation_context
+            )
             enhanced_prompt = f"""{base_prompt}
 
 Note: You have access to the full document(s) without chunking.
@@ -167,7 +171,11 @@ relationships between sections in your reasoning."""
             from app.core.config import settings
             
             # Enhanced prompt for comprehensive answer
-            base_prompt = llm_service.create_answer_prompt(state.original_query, context)
+            base_prompt = llm_service.create_answer_prompt(
+                state.original_query,
+                context,
+                state.conversation_context
+            )
             enhanced_prompt = f"""{base_prompt}
 
 Provide a comprehensive answer that synthesizes insights from the entire document(s).

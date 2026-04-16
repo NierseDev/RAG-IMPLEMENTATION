@@ -83,6 +83,7 @@ CREATE TABLE rag_chunks (
     text TEXT NOT NULL,
     ai_provider TEXT NOT NULL DEFAULT 'ollama' CHECK (ai_provider IN ('ollama', 'openai')),
     embedding_model TEXT NOT NULL DEFAULT 'mxbai-embed-large',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     embedding VECTOR NOT NULL,  -- Supports multiple dimensions (for example 1024 and 1536)
     CHECK (vector_dims(embedding) IN (1024, 1536)),
     created_at TIMESTAMPTZ DEFAULT now()
@@ -138,6 +139,7 @@ RETURNS TABLE (
   embedding_model text,
   text text,
   similarity float,
+  metadata jsonb,
   created_at timestamptz
 )
 LANGUAGE plpgsql
@@ -151,6 +153,7 @@ BEGIN
     rag_chunks.embedding_model,
     rag_chunks.text,
     1 - (rag_chunks.embedding <=> query_embedding) as similarity,
+    rag_chunks.metadata,
     rag_chunks.created_at
   FROM rag_chunks
   WHERE vector_dims(rag_chunks.embedding) = vector_dims(query_embedding)

@@ -5,11 +5,12 @@ Integrated with metadata filtering (Sprint 4).
 """
 from typing import List, Optional, Dict, Any
 from pathlib import Path
+from urllib.parse import urlparse
 from app.core.database import db
 from app.services.embedding import embedding_service
 from app.models.entities import RetrievalResult
 from app.core.config import settings
-from app.core.text_utils import estimate_tokens, safe_truncate_chunks
+from app.core.text_utils import estimate_tokens, safe_truncate_chunks, truncate_to_token_limit
 import logging
 import re
 
@@ -204,7 +205,8 @@ class RetrievalService:
                 ai_provider=item['ai_provider'],
                 embedding_model=item['embedding_model'],
                 created_at=item['created_at'],
-                similarity=item.get('weighted_rrf_score', item.get('rrf_score', 0.0))
+                similarity=item.get('weighted_rrf_score', item.get('rrf_score', 0.0)),
+                metadata=item.get("metadata", {})
             )
             final_results.append(result)
         
@@ -220,7 +222,8 @@ class RetrievalService:
             'ai_provider': result.ai_provider,
             'embedding_model': result.embedding_model,
             'created_at': result.created_at,
-            'similarity': result.similarity
+            'similarity': result.similarity,
+            'metadata': result.metadata
         }
     
     def format_context(
@@ -228,6 +231,7 @@ class RetrievalService:
         results: List[RetrievalResult], 
         max_tokens: Optional[int] = None,
         max_results: Optional[int] = None,
+        max_result_tokens: Optional[int] = None,
         include_page_hint: bool = True,
         include_created_at: bool = False
     ) -> str:
@@ -241,6 +245,7 @@ class RetrievalService:
         # Use configured max or default
         max_tokens = max_tokens or settings.max_context_tokens
         selected_results = results[:max_results] if max_results is not None else results
+        per_result_tokens = max_result_tokens or max(40, min(200, max_tokens // max(1, len(selected_results) * 2)))
         
         # Group by source so citation numbers map to documents, not chunks.
         grouped_results: Dict[str, List[RetrievalResult]] = {}
@@ -255,22 +260,30 @@ class RetrievalService:
         context_parts = []
         for idx, source in enumerate(source_order, 1):
             source_results = grouped_results[source]
+            display_title = next((result.title for result in source_results if result.title), None)
+            display_url = next((result.url for result in source_results if result.url), None)
             lines = [
                 f"=== Source {idx} ===",
                 f"source: {source}",
-                f"chunk_count: {len(source_results)}"
+                f"chunks: {len(source_results)}"
             ]
+            if display_title:
+                lines.append(f"title: {display_title}")
+            if display_url:
+                lines.append(f"url: {display_url}")
             for chunk_idx, result in enumerate(source_results, 1):
                 page_hint = self._extract_page_hint(result.chunk_id)
-                lines.extend([
-                    f"chunk: {result.chunk_id}",
-                    f"score: {result.similarity:.3f}"
-                ])
+                text = truncate_to_token_limit(result.text, per_result_tokens, reserve_tokens=20)
+                chunk_bits = [f"chunk: {result.chunk_id}", f"score: {result.similarity:.3f}"]
+                content_type = result.metadata.get("content_type")
+                if content_type:
+                    chunk_bits.append(f"type: {content_type}")
                 if include_created_at and result.created_at:
-                    lines.append(f"created: {result.created_at.isoformat()}")
+                    chunk_bits.append(f"created: {result.created_at.isoformat()}")
                 if include_page_hint and page_hint:
-                    lines.append(f"page: {page_hint}")
-                lines.append(f"text: {result.text}")
+                    chunk_bits.append(f"page: {page_hint}")
+                chunk_bits.append(f"evidence: {text}")
+                lines.append(" | ".join(chunk_bits))
                 if chunk_idx < len(source_results):
                     lines.append("---")
             lines.append(f"=== End Source {idx} ===")
@@ -336,20 +349,30 @@ class RetrievalService:
                 continue
 
             seen.add(result.source)
-            document_name = document_names.get(result.source) or self._derive_document_name(result.source)
+            document_name = document_names.get(result.source) or result.title or self._derive_document_name(result.source)
             references.append({
                 "document_name": document_name,
                 "source": result.source,
+                "title": result.title,
+                "url": result.url,
                 "chunk_id": result.chunk_id,
                 "similarity": round(result.similarity, 3),
                 "page": self._extract_page_hint(result.chunk_id),
-                "created_at": result.created_at.isoformat() if result.created_at else None
+                "created_at": result.created_at.isoformat() if result.created_at else None,
+                "metadata": result.metadata
             })
 
         return references
 
     def _derive_document_name(self, source: str) -> str:
         """Fallback source label when no document title is available."""
+        if source.startswith("web:"):
+            return source.split("web:", 1)[1] or source
+
+        parsed = urlparse(source)
+        if parsed.scheme and parsed.netloc:
+            return parsed.netloc
+
         name = Path(source).name or source
         stem = Path(name).stem
         return stem if stem else name

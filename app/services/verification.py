@@ -1,7 +1,7 @@
 """
 Verification service for hallucination detection and answer validation.
 """
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 from app.services.llm import llm_service, LLMBudgetExceededError, LLMRateLimitError
 from app.models.entities import RetrievalResult
 from app.core.config import settings
@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 
 class VerificationService:
     """Service for verifying answers and detecting hallucinations."""
+
+    STOPWORDS = {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
+        "how", "if", "in", "is", "it", "its", "of", "on", "or", "that", "the", "their",
+        "there", "these", "this", "to", "was", "were", "what", "when", "where", "which",
+        "who", "why", "with", "will", "would", "can", "could", "should", "may", "might",
+        "about", "into", "over", "under", "than", "then", "also", "more", "most"
+    }
     
     async def verify_answer(
         self,
@@ -61,21 +69,32 @@ class VerificationService:
             logger.info(f"DEBUG: Parsed verification - verified={parsed['verified']}, confidence={parsed['confidence']}, issues={parsed['issues']}")
             
             # Additional checks
-            grounding_score = self._check_grounding(answer, retrieved_docs)
+            support_analysis = self._analyze_answer_support(answer, retrieved_docs)
+            grounding_score = support_analysis["supported_ratio"]
             retrieval_strength = self._calculate_retrieval_strength(retrieved_docs)
             evidence_score = max(grounding_score, retrieval_strength)
             parsed['grounding_score'] = grounding_score
             parsed['retrieval_strength'] = retrieval_strength
             parsed['evidence_score'] = evidence_score
+            parsed['claim_support_score'] = support_analysis["supported_ratio"]
+            parsed['unsupported_claims'] = support_analysis["unsupported_claims"]
             logger.info(
                 f"DEBUG: Grounding score={grounding_score:.2f}, "
                 f"retrieval strength={retrieval_strength:.2f}, evidence={evidence_score:.2f}"
             )
 
+            if support_analysis["unsupported_claims"]:
+                parsed['issues'].extend(support_analysis["unsupported_claims"])
+
+            if not support_analysis["unsupported_claims"] and support_analysis["supported_ratio"] >= 0.55:
+                parsed['verified'] = True
+            elif support_analysis["unsupported_claims"]:
+                parsed['verified'] = False
+
             # Rebalance confidence: evidence can lift conservative verification,
             # but weak evidence still keeps the answer conservative.
             original_confidence = parsed['confidence']
-            blended_confidence = (parsed['confidence'] * 0.4) + (evidence_score * 0.6)
+            blended_confidence = (parsed['confidence'] * 0.3) + (evidence_score * 0.4) + (support_analysis["supported_ratio"] * 0.3)
             if evidence_score >= 0.65:
                 parsed['confidence'] = max(blended_confidence, evidence_score * 0.95)
             else:
@@ -84,6 +103,9 @@ class VerificationService:
             if evidence_score < 0.35:
                 parsed['confidence'] = min(parsed['confidence'], 0.5)
                 parsed['issues'].append(f"Low evidence score: {evidence_score:.2f}")
+
+            if support_analysis["unsupported_claims"] and parsed['confidence'] > 0.7:
+                parsed['confidence'] = 0.7
 
             if parsed['confidence'] != original_confidence:
                 logger.warning(
@@ -116,28 +138,44 @@ class VerificationService:
         Check how well the answer is grounded in the retrieved documents.
         Returns a score between 0.0 and 1.0.
         """
-        if not retrieved_docs or not answer:
-            return 0.0
-        
-        # Extract normalized tokens so punctuation does not suppress overlap.
-        answer_words = set(re.findall(r"[a-z0-9]+", answer.lower()))
-        
-        # Check overlap with retrieved documents
-        total_overlap = 0
-        total_words = 0
-        
-        for doc in retrieved_docs:
-            doc_words = set(re.findall(r"[a-z0-9]+", doc.text.lower()))
-            overlap = len(answer_words & doc_words)
-            total_overlap += overlap
-            total_words += len(doc_words)
-        
-        if total_words == 0:
-            return 0.0
-        
-        # Calculate grounding score
-        grounding_score = min(total_overlap / len(answer_words), 1.0) if answer_words else 0.0
-        return grounding_score
+        return self._analyze_answer_support(answer, retrieved_docs)["supported_ratio"]
+
+    def _analyze_answer_support(
+        self,
+        answer: str,
+        retrieved_docs: List[RetrievalResult]
+    ) -> Dict[str, Any]:
+        """Estimate which answer claims are supported by the retrieved context."""
+        if not answer or not retrieved_docs:
+            return {
+                "supported_ratio": 0.0,
+                "supported_claims": [],
+                "unsupported_claims": ["No grounded evidence available"]
+            }
+
+        context_text = " ".join(doc.text for doc in retrieved_docs).lower()
+        context_tokens_list = self._content_tokens(context_text)
+        context_tokens = set(context_tokens_list)
+        context_bigrams = self._build_bigrams(context_tokens_list)
+
+        supported_claims = []
+        unsupported_claims = []
+        sentences = self._split_sentences(answer)
+
+        for sentence in sentences:
+            supported, reason = self._sentence_supported(sentence, context_text, context_tokens, context_bigrams)
+            if supported:
+                supported_claims.append(sentence)
+            else:
+                unsupported_claims.append(reason)
+
+        total_claims = len(sentences) or 1
+        supported_ratio = len(supported_claims) / total_claims
+        return {
+            "supported_ratio": supported_ratio,
+            "supported_claims": supported_claims,
+            "unsupported_claims": unsupported_claims
+        }
 
     def _calculate_retrieval_strength(self, retrieved_docs: List[RetrievalResult]) -> float:
         """
@@ -148,6 +186,64 @@ class VerificationService:
 
         top_docs = sorted(retrieved_docs, key=lambda doc: doc.similarity, reverse=True)[:3]
         return sum(doc.similarity for doc in top_docs) / len(top_docs)
+
+    def _split_sentences(self, text: str) -> List[str]:
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+    def _content_tokens(self, text: str) -> List[str]:
+        tokens = re.findall(r"[a-z0-9][a-z0-9+\-_.:/]*", text.lower())
+        return [token for token in tokens if len(token) > 2 and token not in self.STOPWORDS]
+
+    def _build_bigrams(self, tokens: List[str]) -> set[str]:
+        return {f"{tokens[i]} {tokens[i + 1]}" for i in range(len(tokens) - 1)}
+
+    def _sentence_supported(
+        self,
+        sentence: str,
+        context_text: str,
+        context_tokens: set[str],
+        context_bigrams: set[str]
+    ) -> Tuple[bool, str]:
+        content_tokens = self._content_tokens(sentence)
+        if not content_tokens:
+            return True, ""
+
+        content_set = set(content_tokens)
+        overlap = content_set & context_tokens
+        coverage = len(overlap) / len(content_set)
+
+        sentence_lower = sentence.lower()
+        bigram_hits = 0
+        if len(content_tokens) > 1:
+            sentence_bigrams = {
+                f"{content_tokens[i]} {content_tokens[i + 1]}"
+                for i in range(len(content_tokens) - 1)
+            }
+            bigram_hits = len(sentence_bigrams & context_bigrams)
+
+        factual_markers = self._extract_factual_markers(sentence_lower)
+        unsupported_markers = [marker for marker in factual_markers if marker not in context_text]
+
+        supported = coverage >= 0.30 or (coverage >= 0.20 and bigram_hits > 0)
+        if unsupported_markers and coverage < 0.45:
+            supported = False
+
+        if supported:
+            return True, ""
+
+        detail = sentence.strip()
+        if unsupported_markers:
+            detail = f"Unsupported claim: {detail}"
+        else:
+            detail = f"Low support: {detail}"
+        return False, detail
+
+    def _extract_factual_markers(self, sentence: str) -> List[str]:
+        markers = re.findall(r"\b\d+(?:\.\d+)?%?\b", sentence)
+        markers.extend(re.findall(r"\b(?:19|20)\d{2}\b", sentence))
+        markers.extend(re.findall(r"\b[a-z0-9]+(?:\.[a-z0-9]+)+\b", sentence))
+        return [marker.lower() for marker in markers]
     
     def _parse_verification(self, verification_text: str) -> Dict:
         """Parse LLM verification output."""

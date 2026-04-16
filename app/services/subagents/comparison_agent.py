@@ -141,7 +141,11 @@ Sources being compared: {len(docs_by_source)}
             
             from app.services.llm import llm_service
             
-            base_prompt = llm_service.create_reason_prompt(state.current_query, context)
+            base_prompt = llm_service.create_reason_prompt(
+                state.current_query,
+                context,
+                state.conversation_context
+            )
             comparative_prompt = f"""{base_prompt}
 
 COMPARISON ANALYSIS INSTRUCTIONS:
@@ -176,7 +180,11 @@ COMPARISON ANALYSIS INSTRUCTIONS:
             
             from app.services.llm import llm_service
             
-            base_prompt = llm_service.create_answer_prompt(state.original_query, context)
+            base_prompt = llm_service.create_answer_prompt(
+                state.original_query,
+                context,
+                state.conversation_context
+            )
             comparative_prompt = f"""{base_prompt}
 
 ANSWER REQUIREMENTS:

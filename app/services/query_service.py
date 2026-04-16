@@ -217,7 +217,8 @@ class QueryService:
                 ai_provider=item.get('ai_provider'),
                 embedding_model=item.get('embedding_model'),
                 created_at=item.get('created_at'),
-                similarity=item.get('weighted_rrf_score', item.get('rrf_score', 0.0))
+                similarity=item.get('weighted_rrf_score', item.get('rrf_score', 0.0)),
+                metadata=item.get('metadata', {})
             )
             fused_results.append(result)
         
@@ -334,7 +335,8 @@ class QueryService:
             'ai_provider': result.ai_provider,
             'embedding_model': result.embedding_model,
             'created_at': result.created_at,
-            'similarity': result.similarity
+            'similarity': result.similarity,
+            'metadata': result.metadata
         }
     
     def format_results(
@@ -367,7 +369,8 @@ class QueryService:
                 'text': result.text[:500] + "..." if len(result.text) > 500 else result.text,
                 'similarity': round(result.similarity, 3),
                 'provider': result.ai_provider,
-                'model': result.embedding_model
+                'model': result.embedding_model,
+                'metadata': result.metadata
             })
         
         response = {
