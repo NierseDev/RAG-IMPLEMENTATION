@@ -254,6 +254,7 @@ async def ingest_documents_batch(
                         "filename": file.filename,
                         "success": False,
                         "skipped": True,
+                        "status": "SKIPPED",
                         "error": f"File already exists with {existing_chunk_count} chunks. Use 'replace' or 'append' to update.",
                         "chunks_created": 0,
                         "existing_chunks": existing_chunk_count
@@ -274,6 +275,7 @@ async def ingest_documents_batch(
                 results.append({
                     "filename": file.filename,
                     "success": False,
+                    "status": "FAILED",
                     "error": message,
                     "chunks_created": 0
                 })
@@ -293,6 +295,7 @@ async def ingest_documents_batch(
                     results.append({
                         "filename": file.filename,
                         "success": False,
+                        "status": "FAILED",
                         "error": "No content could be extracted",
                         "chunks_created": 0
                     })
@@ -361,11 +364,14 @@ async def ingest_documents_batch(
                     result_entry["action"] = "appended"
                     result_entry["existing_chunks"] = existing_chunk_count
                     result_entry["total_chunks"] = existing_chunk_count + inserted
+                    result_entry["status"] = "APPENDED"
                 elif source_exists and duplicate_action == "replace":
                     result_entry["action"] = "replaced"
                     result_entry["previous_chunks"] = existing_chunk_count
+                    result_entry["status"] = "REPLACED"
                 else:
                     result_entry["action"] = "new"
+                    result_entry["status"] = "NEW"
                 
                 results.append(result_entry)
                 
@@ -380,6 +386,7 @@ async def ingest_documents_batch(
             results.append({
                 "filename": file.filename,
                 "success": False,
+                "status": "FAILED",
                 "error": str(e),
                 "chunks_created": 0
             })

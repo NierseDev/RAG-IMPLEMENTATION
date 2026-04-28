@@ -5,26 +5,14 @@ Enhanced with semantic chunking, dynamic sizing, and metadata extraction (Sprint
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
+import gc
 import hashlib
 import html
 import re
-from docling.document_converter import (
-    DocumentConverter,
-    HTMLFormatOption,
-    ImageFormatOption,
-    MarkdownFormatOption,
-    PdfFormatOption,
-    PowerpointFormatOption,
-    WordFormatOption,
-)
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions, OcrAutoOptions
 from app.core.config import settings
 from app.core.text_utils import estimate_tokens, truncate_to_token_limit
 from app.core.hash_utils import compute_stream_hash, compute_bytes_hash
-from app.core.database import get_supabase_client
 from app.models.entities import RAGChunk
-from app.services.embedding import embedding_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -46,14 +34,11 @@ class DocumentProcessor:
     """Service for processing documents into chunks with embeddings."""
     
     def __init__(self):
-        self.converter = self._build_converter(lightweight=False)
-        self.lightweight_pdf_converter = self._build_converter(lightweight=True)
+        self.converter = None
+        self.fallback_converter = None
         self.chunk_size = settings.max_chunk_tokens  # Use safe chunk size
         self.chunk_overlap = settings.chunk_overlap
-        self.client = get_supabase_client()
-        self.large_pdf_size_threshold = min(settings.max_file_size_bytes, 20 * 1024 * 1024)
-        self.large_pdf_page_threshold = 80
-        self.large_pdf_char_cap = 180_000
+        self._client = None
         
         # Sprint 3: Load advanced chunking and metadata services
         self.semantic_chunker = None
@@ -85,10 +70,31 @@ class DocumentProcessor:
         
         logger.info(f"Document processor initialized (chunk_size={self.chunk_size}, overlap={self.chunk_overlap})")
 
-    def _build_converter(self, lightweight: bool = False) -> DocumentConverter:
-        """Build a Docling converter tuned for richer text extraction."""
+    @property
+    def client(self):
+        """Get the Supabase client lazily."""
+        if self._client is None:
+            from app.core.database import get_supabase_client
+            self._client = get_supabase_client()
+        return self._client
+
+    def _build_converter(self):
+        """Build a Docling converter tuned for rich text extraction."""
         try:
-            pdf_options = self._build_pdf_pipeline_options(lightweight=lightweight)
+            from docling.document_converter import (
+                DocumentConverter,
+                HTMLFormatOption,
+                ImageFormatOption,
+                MarkdownFormatOption,
+                PdfFormatOption,
+                PowerpointFormatOption,
+                WordFormatOption,
+            )
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions, LayoutObjectDetectionOptions, RapidOcrOptions
+            from docling.datamodel.object_detection_engine_options import OnnxRuntimeObjectDetectionEngineOptions
+
+            pdf_options = self._build_pdf_pipeline_options()
             format_options = {
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
                 InputFormat.IMAGE: ImageFormatOption(pipeline_options=pdf_options),
@@ -100,30 +106,35 @@ class DocumentProcessor:
             return DocumentConverter(format_options=format_options)
         except Exception as e:
             logger.warning(f"Custom Docling configuration failed, using default converter: {e}")
+            from docling.document_converter import DocumentConverter
             return DocumentConverter()
 
-    def _build_pdf_pipeline_options(self, lightweight: bool = False) -> PdfPipelineOptions:
-        """Build PDF pipeline options for either rich or memory-safe extraction."""
-        if lightweight:
-            return PdfPipelineOptions(
-                do_ocr=False,
-                do_formula_enrichment=True,
-                do_code_enrichment=False,
-                force_backend_text=True,
-                generate_parsed_pages=False,
-                ocr_options=OcrAutoOptions(
-                    force_full_page_ocr=False,
-                    bitmap_area_threshold=0.1,
-                ),
-            )
+    def _build_fallback_converter(self):
+        """Build a conservative Docling converter for problematic PDFs."""
+        from docling.document_converter import DocumentConverter
+        return DocumentConverter()
+
+    def _build_pdf_pipeline_options(self):
+        """Build the full-fidelity PDF pipeline options."""
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, LayoutObjectDetectionOptions, RapidOcrOptions
+        from docling.datamodel.object_detection_engine_options import OnnxRuntimeObjectDetectionEngineOptions
 
         return PdfPipelineOptions(
             do_ocr=True,
             do_formula_enrichment=True,
             do_code_enrichment=True,
-            ocr_options=OcrAutoOptions(
+            layout_options=LayoutObjectDetectionOptions(
+                engine_options=OnnxRuntimeObjectDetectionEngineOptions(
+                    providers=["CPUExecutionProvider"],
+                ),
+                create_orphan_clusters=True,
+                skip_cell_assignment=False,
+                keep_empty_clusters=False,
+            ),
+            ocr_options=RapidOcrOptions(
                 force_full_page_ocr=True,
                 bitmap_area_threshold=0.02,
+                rapidocr_params={"padding": True},
             ),
             generate_parsed_pages=False,
         )
@@ -139,45 +150,48 @@ class DocumentProcessor:
         Returns: (chunks, metadata)
         
         Sprint 3: Enhanced with semantic chunking and metadata extraction
-        Sprint 5: Add memory-safe PDF processing and embedding failure handling
+        Sprint 5: Stream uploads to disk and keep full-fidelity parsing for all supported formats
         """
+        result = None
+        doc = None
         try:
             file_suffix = Path(file_path).suffix.lower()
-            result = None
             text_content = ""
-            max_chars = None
 
             if file_suffix == ".txt":
                 text_content = self._read_plain_text_file(file_path)
-                result = None
-            elif file_suffix == ".pdf":
-                # Sprint 5: Memory-safe PDF processing - pick a lighter path for large PDFs.
+            else:
                 try:
-                    converter = self.lightweight_pdf_converter if self._should_use_lightweight_pdf(file_size) else self.converter
-                    result = converter.convert(file_path)
-                    doc = result.document
-                    page_count = getattr(doc, 'page_count', 0)
-                    if converter is self.lightweight_pdf_converter:
-                        max_chars = self.large_pdf_char_cap
-                    if page_count > self.large_pdf_page_threshold:
-                        logger.warning(
-                            f"PDF has {page_count} pages, truncating extracted text for memory safety"
+                    result = self._get_converter().convert(file_path)
+                except Exception as e:
+                    if self._is_memory_pressure_error(e):
+                        logger.error(
+                            f"Memory pressure processing {source} with full-fidelity Docling; "
+                            f"no lightweight fallback is used so tables and images stay intact."
                         )
-                        max_chars = self.large_pdf_char_cap
-                except MemoryError:
-                    logger.warning(f"Memory error processing PDF: {source}. Retrying with lightweight PDF path.")
-                    try:
-                        result = self.lightweight_pdf_converter.convert(file_path)
-                        doc = result.document
-                        max_chars = self.large_pdf_char_cap
-                    except Exception:
-                        logger.error(f"Memory error processing PDF: {source}. File too large.")
                         raise
-            
-            if file_suffix != ".txt" and not result:
-                raise ValueError("Document conversion failed")
-            
-            doc = result.document if result else None
+
+                    if file_suffix == ".pdf":
+                        logger.warning(
+                            f"Full-fidelity Docling PDF conversion failed for {source}; "
+                            f"retrying with conservative fallback: {e}"
+                        )
+                        try:
+                            result = self._get_fallback_converter().convert(file_path)
+                        except Exception as fallback_error:
+                            logger.error(
+                                f"Fallback Docling PDF conversion failed for {source}: {fallback_error}"
+                            )
+                            raise fallback_error from e
+                    else:
+                        raise
+
+                if not result:
+                    raise ValueError("Document conversion failed")
+
+                doc = result.document
+                if not doc:
+                    raise ValueError("Document conversion returned no document")
 
             # Extract text content using the richest available representation.
             if doc:
@@ -187,10 +201,6 @@ class DocumentProcessor:
 
             if not text_content.strip():
                 raise ValueError("No text could be extracted from document")
-
-            if max_chars and len(text_content) > max_chars:
-                text_content = text_content[:max_chars]
-                logger.info(f"Truncated content to {len(text_content)} characters for memory safety")
 
             logger.info(
                 f"Extracted text for {source} using {extraction_mode} "
@@ -275,6 +285,11 @@ class DocumentProcessor:
         except Exception as e:
             logger.error(f"Error processing document {file_path}: {e}")
             raise
+        finally:
+            # Docling/pdfium objects need to be released before interpreter teardown.
+            result = None
+            doc = None
+            gc.collect()
 
     def _read_plain_text_file(self, file_path: str) -> str:
         """Read plain text files with a small encoding fallback set."""
@@ -298,17 +313,17 @@ class DocumentProcessor:
 
     def _extract_document_text(self, doc) -> Tuple[str, str]:
         """Extract the best text representation from a Docling document."""
-        candidates = {
-            "text": getattr(doc, "export_to_text", lambda: "")() or "",
-            "markdown": getattr(doc, "export_to_markdown", lambda: "")() or "",
-            "html": self._strip_html(getattr(doc, "export_to_html", lambda: "")() or ""),
-        }
+        candidates = [
+            ("text", self._safe_export_docling_text(doc, "export_to_text")),
+            ("markdown", self._safe_export_docling_text(doc, "export_to_markdown")),
+            ("html", self._safe_export_docling_text(doc, "export_to_html", strip_html=True)),
+        ]
 
         best_mode = "markdown"
         best_text = ""
         best_score = -1
 
-        for mode, candidate in candidates.items():
+        for mode, candidate in candidates:
             normalized = self._normalize_extracted_text(candidate)
             score = self._score_extracted_text(normalized, mode)
             if score > best_score:
@@ -317,6 +332,28 @@ class DocumentProcessor:
                 best_score = score
 
         return best_text, best_mode
+
+    def _safe_export_docling_text(
+        self,
+        doc,
+        export_method: str,
+        strip_html: bool = False
+    ) -> str:
+        """Export Docling text without failing the whole ingest on one bad representation."""
+        exporter = getattr(doc, export_method, None)
+        if not callable(exporter):
+            return ""
+
+        try:
+            text = exporter() or ""
+        except Exception as e:
+            logger.warning(f"Docling {export_method} failed; skipping representation: {e}")
+            return ""
+
+        if strip_html:
+            text = self._strip_html(text)
+
+        return text
 
     def _normalize_extracted_text(self, text: str) -> str:
         """Normalize Docling output into clean chunkable text."""
@@ -366,9 +403,21 @@ class DocumentProcessor:
 
         return (word_count * 4) + min(line_count, 40) + (alpha_count // 25) + structure_bonus
 
-    def _should_use_lightweight_pdf(self, file_size: int) -> bool:
-        """Decide when to use the lightweight PDF pipeline."""
-        return file_size >= self.large_pdf_size_threshold
+    def _is_memory_pressure_error(self, error: Exception) -> bool:
+        """Detect Docling failures caused by memory pressure."""
+        if isinstance(error, MemoryError):
+            return True
+
+        message = str(error).lower()
+        return any(token in message for token in (
+            "bad_alloc",
+            "std::bad_alloc",
+            "memoryerror",
+            "memory error",
+            "out of memory",
+            "cannot allocate memory",
+            "alloc",
+        ))
 
     def _create_chunk_fragments(self, text: str) -> List[ChunkFragment]:
         """Split normalized text into prose and formula-aware fragments."""
@@ -392,18 +441,26 @@ class DocumentProcessor:
 
         fragments: List[ChunkFragment] = []
         cursor = 0
+        last_formula_fragment: Optional[ChunkFragment] = None
         for match in formula_pattern.finditer(block):
             before = block[cursor:match.start()].strip()
             if before:
                 fragments.append(ChunkFragment(before, {"content_type": "prose"}))
 
             formula_text = match.group(0).strip()
-            fragments.append(ChunkFragment(formula_text, self._build_formula_metadata(formula_text)))
+            formula_fragment = ChunkFragment(
+                formula_text,
+                self._build_formula_metadata(formula_text, context_before=before or None),
+            )
+            fragments.append(formula_fragment)
+            last_formula_fragment = formula_fragment
             cursor = match.end()
 
         tail = block[cursor:].strip()
         if tail:
             fragments.append(self._build_text_fragment(tail))
+            if last_formula_fragment is not None:
+                last_formula_fragment.metadata["formula_context_after"] = self._shorten_formula_context(tail)
 
         if fragments:
             return fragments
@@ -417,15 +474,30 @@ class DocumentProcessor:
         """Create a prose fragment with normalized metadata."""
         return ChunkFragment(text, {"content_type": "prose"})
 
-    def _build_formula_metadata(self, text: str) -> Dict[str, Any]:
+    def _build_formula_metadata(
+        self,
+        text: str,
+        context_before: Optional[str] = None,
+        context_after: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Create metadata for a standalone formula fragment."""
-        return {
+        metadata = {
             "content_type": "formula",
             "is_formula": True,
             "formula_block": True,
             "formula_style": self._detect_formula_style(text),
             "token_estimate": estimate_tokens(text),
         }
+        if context_before:
+            metadata["formula_context_before"] = self._shorten_formula_context(context_before)
+        if context_after:
+            metadata["formula_context_after"] = self._shorten_formula_context(context_after)
+        return metadata
+
+    def _shorten_formula_context(self, text: str, max_tokens: int = 60) -> str:
+        """Keep formula context compact while preserving the local source relation."""
+        normalized = self._normalize_extracted_text(text)
+        return truncate_to_token_limit(normalized, max_tokens)
 
     def _detect_formula_style(self, text: str) -> str:
         """Classify formula delimiter style."""
@@ -711,6 +783,8 @@ class DocumentProcessor:
             List of embeddings (None for failed chunks)
         """
         try:
+            from app.services.embedding import embedding_service
+
             # Try primary embedding service
             embeddings = await embedding_service.embed_batch(chunks)
             
@@ -738,6 +812,18 @@ class DocumentProcessor:
             logger.error(f"Batch embedding failed: {e}")
             # Return list of None values to indicate all failed
             return [None] * len(chunks)
+
+    def _get_converter(self):
+        """Lazily initialize the Docling converter."""
+        if self.converter is None:
+            self.converter = self._build_converter()
+        return self.converter
+
+    def _get_fallback_converter(self):
+        """Lazily initialize the conservative PDF fallback converter."""
+        if self.fallback_converter is None:
+            self.fallback_converter = self._build_fallback_converter()
+        return self.fallback_converter
 
 
 # Global document processor instance

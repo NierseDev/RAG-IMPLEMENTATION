@@ -408,12 +408,133 @@
             word-break: break-word;
         }
 
+        .message-body > :first-child {
+            margin-top: 0;
+        }
+
+        .message-body > :last-child {
+            margin-bottom: 0;
+        }
+
+        .message-body p,
+        .message-body ul,
+        .message-body ol,
+        .message-body blockquote,
+        .message-body pre,
+        .message-body h1,
+        .message-body h2,
+        .message-body h3,
+        .message-body h4,
+        .message-body h5,
+        .message-body h6,
+        .message-body hr {
+            margin: 0 0 12px;
+        }
+
+        .message-body h1,
+        .message-body h2,
+        .message-body h3,
+        .message-body h4,
+        .message-body h5,
+        .message-body h6 {
+            color: #1f2937;
+            line-height: 1.25;
+            font-weight: 700;
+        }
+
+        .message-body h1 { font-size: 1.4em; }
+        .message-body h2 { font-size: 1.25em; }
+        .message-body h3 { font-size: 1.1em; }
+        .message-body h4 { font-size: 1em; }
+        .message-body h5 { font-size: 0.95em; }
+        .message-body h6 { font-size: 0.9em; color: #4b5563; }
+
+        .message-body p {
+            white-space: pre-wrap;
+        }
+
+        .message-body ul,
+        .message-body ol {
+            padding-left: 20px;
+        }
+
+        .message-body li + li {
+            margin-top: 4px;
+        }
+
+        .message-body blockquote {
+            padding: 10px 12px;
+            border-left: 4px solid #cbd5e1;
+            background: #f8fafc;
+            color: #475569;
+            border-radius: 6px;
+        }
+
+        .message-body hr {
+            border: 0;
+            border-top: 1px solid #e5e7eb;
+        }
+
         .message-body code {
             background: #f1f3f5;
             padding: 2px 6px;
             border-radius: 3px;
             font-family: 'Monaco', 'Courier New', monospace;
             font-size: 13px;
+        }
+
+        .message-body pre {
+            margin: 12px 0;
+            padding: 12px 14px;
+            background: #1f2933;
+            color: #e5e7eb;
+            border-radius: 8px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .message-body pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            color: inherit;
+            font-size: 13px;
+            display: block;
+            line-height: 1.5;
+        }
+
+        .message-body .message-link {
+            color: #2563eb;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+
+        .message-body .message-link:hover {
+            color: #1d4ed8;
+        }
+
+        .message-body .math-inline {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 4px;
+            background: #eef2ff;
+            color: #3730a3;
+            font-family: "Cambria Math", "STIX Two Math", Georgia, serif;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        .message-body .math-block {
+            margin: 12px 0;
+            padding: 12px 14px;
+            border-left: 4px solid #6366f1;
+            background: #f8fafc;
+            border-radius: 6px;
+            color: #1f2937;
+            font-family: "Cambria Math", "STIX Two Math", Georgia, serif;
+            white-space: pre-wrap;
+            overflow-x: auto;
         }
 
         .message-sources {
@@ -445,6 +566,17 @@
 
         .source-text {
             color: #7f8c8d;
+        }
+
+        .source-context {
+            margin-top: 6px;
+            padding: 8px 10px;
+            border-left: 3px solid #6366f1;
+            background: #f8fafc;
+            border-radius: 6px;
+            color: #1f2937;
+            font-size: 12px;
+            line-height: 1.5;
         }
     </style>
 </head>
@@ -562,8 +694,20 @@
 
     <!-- Load shared components first -->
     <script src="/static/js/components.js?v=3"></script>
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['\\(', '\\)'], ['$', '$']],
+                displayMath: [['\\[', '\\]'], ['$$', '$$']]
+            },
+            svg: {
+                fontCache: 'global'
+            }
+        };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
     
     <!-- Load chat application -->
-    <script src="/static/js/chat-app.js?v=3"></script>
+    <script src="/static/js/chat-app.js?v=6"></script>
 </body>
 </html>

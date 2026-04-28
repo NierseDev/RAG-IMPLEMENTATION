@@ -92,8 +92,10 @@ def test_batch_upload():
             print_section("Results")
             if 'results' in result:
                 for item in result['results']:
-                    status_icon = "✅" if item['status'] == "NEW" else "⚠️"
-                    print(f"{status_icon} {item['filename']}: {item['status']} - {item['message']}")
+                    status = item.get('status') or item.get('action', '').upper() or 'UNKNOWN'
+                    status_icon = "✅" if status == "NEW" else "⚠️"
+                    message = item.get('message') or item.get('error', '')
+                    print(f"{status_icon} {item['filename']}: {status} - {message}")
             
             if 'summary' in result:
                 print_section("Summary")

@@ -265,7 +265,8 @@ class RetrievalService:
             lines = [
                 f"=== Source {idx} ===",
                 f"source: {source}",
-                f"chunks: {len(source_results)}"
+                f"chunks: {len(source_results)}",
+                f"chunk_count: {len(source_results)}"
             ]
             if display_title:
                 lines.append(f"title: {display_title}")
@@ -278,10 +279,21 @@ class RetrievalService:
                 content_type = result.metadata.get("content_type")
                 if content_type:
                     chunk_bits.append(f"type: {content_type}")
+                formula_context_before = result.metadata.get("formula_context_before")
+                formula_context_after = result.metadata.get("formula_context_after")
+                if formula_context_before:
+                    chunk_bits.append(
+                        f"context-before: {truncate_to_token_limit(formula_context_before, 40)}"
+                    )
+                if formula_context_after:
+                    chunk_bits.append(
+                        f"context-after: {truncate_to_token_limit(formula_context_after, 40)}"
+                    )
                 if include_created_at and result.created_at:
                     chunk_bits.append(f"created: {result.created_at.isoformat()}")
                 if include_page_hint and page_hint:
                     chunk_bits.append(f"page: {page_hint}")
+                chunk_bits.append(f"text: {text}")
                 chunk_bits.append(f"evidence: {text}")
                 lines.append(" | ".join(chunk_bits))
                 if chunk_idx < len(source_results):

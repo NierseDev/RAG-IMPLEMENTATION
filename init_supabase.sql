@@ -21,12 +21,11 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- =============================================================================
--- STEP 2: Create documents_registry table (moved before rag_chunks for FK dependency)
+-- STEP 2: Create documents_registry table (admin-only ingestion, no user ownership)
 -- =============================================================================
 
 CREATE TABLE documents_registry (
     id BIGSERIAL PRIMARY KEY,
-    user_id UUID DEFAULT auth.uid(),
     filename TEXT NOT NULL,
     source TEXT UNIQUE,
     file_hash TEXT NOT NULL UNIQUE,
@@ -45,7 +44,6 @@ CREATE INDEX documents_registry_hash_idx ON documents_registry (file_hash);
 CREATE INDEX documents_registry_filename_idx ON documents_registry (filename);
 CREATE INDEX documents_registry_upload_date_idx ON documents_registry (upload_date DESC);
 CREATE INDEX documents_registry_status_idx ON documents_registry (status);
-CREATE INDEX documents_registry_user_id_idx ON documents_registry (user_id, created_at DESC);
 
 -- Enable RLS on documents_registry
 ALTER TABLE documents_registry ENABLE ROW LEVEL SECURITY;
@@ -53,23 +51,6 @@ ALTER TABLE documents_registry ENABLE ROW LEVEL SECURITY;
 -- Service role policy (for DEBUG/backend access)
 CREATE POLICY "Service role full access" ON documents_registry
   FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
-
--- User read access
-CREATE POLICY "Users can read own documents" ON documents_registry
-  FOR SELECT USING (auth.uid() = user_id);
-
--- User insert access (default user_id)
-CREATE POLICY "Users can insert own documents" ON documents_registry
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
-
--- User update access
-CREATE POLICY "Users can update own documents" ON documents_registry
-  FOR UPDATE USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- User delete access
-CREATE POLICY "Users can delete own documents" ON documents_registry
-  FOR DELETE USING (auth.uid() = user_id);
 
 -- =============================================================================
 -- STEP 3: Create the main RAG chunks table (now can reference documents_registry)
@@ -268,13 +249,12 @@ SELECT
 FROM get_chunk_stats();
 
 -- =============================================================================
--- STEP 8: Create document_metadata table (Phase 2.5)
+-- STEP 8: Create document_metadata table (admin-only ingestion metadata)
 -- =============================================================================
 
 CREATE TABLE document_metadata (
     id BIGSERIAL PRIMARY KEY,
     document_id BIGINT NOT NULL REFERENCES documents_registry(id) ON DELETE CASCADE,
-    user_id UUID DEFAULT auth.uid(),
     key TEXT NOT NULL,
     value TEXT NOT NULL,
     value_json JSONB,
@@ -286,7 +266,6 @@ CREATE TABLE document_metadata (
 CREATE INDEX document_metadata_doc_id_idx ON document_metadata (document_id);
 CREATE INDEX document_metadata_key_idx ON document_metadata (key);
 CREATE INDEX document_metadata_json_idx ON document_metadata USING gin (value_json);
-CREATE INDEX document_metadata_user_id_idx ON document_metadata (user_id, extracted_at DESC);
 
 -- Enable RLS on document_metadata
 ALTER TABLE document_metadata ENABLE ROW LEVEL SECURITY;
@@ -294,23 +273,6 @@ ALTER TABLE document_metadata ENABLE ROW LEVEL SECURITY;
 -- Service role policy
 CREATE POLICY "Service role full access" ON document_metadata
   FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
-
--- User read access (only for their own documents)
-CREATE POLICY "Users can read own document metadata" ON document_metadata
-  FOR SELECT USING (auth.uid() = user_id);
-
--- User insert access (default user_id)
-CREATE POLICY "Users can insert own document metadata" ON document_metadata
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
-
--- User update access
-CREATE POLICY "Users can update own document metadata" ON document_metadata
-  FOR UPDATE USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- User delete access
-CREATE POLICY "Users can delete own document metadata" ON document_metadata
-  FOR DELETE USING (auth.uid() = user_id);
 
 -- =============================================================================
 -- STEP 9: Add full-text search to rag_chunks (Phase 2.5)
@@ -480,15 +442,15 @@ SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG with RLS!' as fina
 -- 
 -- ✅ Tables:
 --    - rag_chunks (with VECTOR for multi-model dimensions)
---    - documents_registry (with user_id for RLS)
---    - document_metadata (with user_id for RLS)
+--    - documents_registry (admin-only)
+--    - document_metadata (admin-only)
 --    - chat_sessions (with user_id for RLS)
 --    - chat_messages (with user_id for RLS)
 -- 
 -- ✅ Indexes:
 --    - IVFFlat vector indexes for 1024 and 1536 dimensions
 --    - B-tree indexes for fast filtering
---    - User-scoped indexes: (user_id, created_at DESC) on all auth tables
+--    - User-scoped indexes: (user_id, created_at DESC) on chat tables
 -- 
 -- ✅ Functions:
 --    - match_chunks() - vector similarity search
@@ -498,12 +460,12 @@ SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG with RLS!' as fina
 -- 
 -- ✅ Security (Row Level Security):
 --    - rag_chunks: anonymous/authenticated read access
---    - documents_registry: user-scoped access + service role bypass
---    - document_metadata: user-scoped access + service role bypass
+--    - documents_registry: service role bypass only
+--    - document_metadata: service role bypass only
 --    - chat_sessions: user-scoped access + service role bypass
 --    - chat_messages: user-scoped access with session isolation + service role bypass
 --
---    For each table:
+--    For chat tables:
 --      • Service role can access everything (FOR ALL)
 --      • Users can SELECT only their own records (user_id = auth.uid())
 --      • Users can INSERT only with their user_id

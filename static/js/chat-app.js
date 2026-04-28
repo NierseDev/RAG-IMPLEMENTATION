@@ -309,6 +309,7 @@ class ChatApp {
         `;
 
         this.chatMessagesEl.appendChild(messageEl);
+        this.typesetMath(messageEl);
         this.scrollToBottom();
 
         return messageId;
@@ -348,19 +349,192 @@ class ChatApp {
     }
 
     formatMessage(content) {
-        // Simple markdown formatting
-        let formatted = this.escapeHtml(content ?? '');
-        
-        // Bold
-        formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        
-        // Code blocks
-        formatted = formatted.replace(/`(.*?)`/g, '<code>$1</code>');
-        
-        // Line breaks
-        formatted = formatted.replace(/\n/g, '<br>');
-        
+        const text = (content ?? '').toString().replace(/\r\n/g, '\n');
+        const placeholders = [];
+
+        const stash = (html) => {
+            const token = `%%FMT_${placeholders.length}%%`;
+            placeholders.push(html);
+            return token;
+        };
+
+        let formatted = this.escapeHtml(text);
+
+        formatted = formatted.replace(/```([\w-]+)?\s*\n([\s\S]*?)```/g, (_, language = '', code = '') => {
+            const languageClass = language ? ` language-${language.toLowerCase()}` : '';
+            return stash(`<pre class="message-code-block"><code class="${languageClass.trim()}">${code}</code></pre>`);
+        });
+
+        formatted = formatted.replace(/\$\$([\s\S]+?)\$\$/g, (_, math = '') => {
+            return stash(`<div class="math-block">\\[${math.trim()}\\]</div>`);
+        });
+
+        formatted = formatted.replace(/\\\[([\s\S]+?)\\\]/g, (_, math = '') => {
+            return stash(`<div class="math-block">\\[${math.trim()}\\]</div>`);
+        });
+
+        const lines = formatted.split('\n');
+        const blocks = [];
+        const paragraphLines = [];
+        const quoteLines = [];
+        const listItems = [];
+        let listType = null;
+
+        const flushParagraph = () => {
+            if (!paragraphLines.length) return;
+            blocks.push(`<p>${paragraphLines.join('<br>')}</p>`);
+            paragraphLines.length = 0;
+        };
+
+        const flushQuote = () => {
+            if (!quoteLines.length) return;
+            blocks.push(`<blockquote>${quoteLines.join('<br>')}</blockquote>`);
+            quoteLines.length = 0;
+        };
+
+        const flushList = () => {
+            if (!listItems.length || !listType) return;
+            blocks.push(`<${listType}>${listItems.join('')}</${listType}>`);
+            listItems.length = 0;
+            listType = null;
+        };
+
+        for (const rawLine of lines) {
+            const line = rawLine.trimEnd();
+
+            if (!line.trim()) {
+                flushParagraph();
+                flushQuote();
+                flushList();
+                blocks.push('');
+                continue;
+            }
+
+            const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+            if (headingMatch) {
+                flushParagraph();
+                flushQuote();
+                flushList();
+                const level = headingMatch[1].length;
+                blocks.push(`<h${level}>${this.formatMarkdownInline(headingMatch[2])}</h${level}>`);
+                continue;
+            }
+
+            if (/^(?:---+|\*\*\*+|___+)$/.test(line.trim())) {
+                flushParagraph();
+                flushQuote();
+                flushList();
+                blocks.push('<hr>');
+                continue;
+            }
+
+            const quoteMatch = line.match(/^>\s?(.*)$/);
+            if (quoteMatch) {
+                flushParagraph();
+                flushList();
+                quoteLines.push(this.formatMarkdownInline(quoteMatch[1]));
+                continue;
+            }
+
+            const unorderedMatch = line.match(/^(\s*)[-*+]\s+(.+)$/);
+            const orderedMatch = line.match(/^(\s*)\d+\.\s+(.+)$/);
+            if (unorderedMatch || orderedMatch) {
+                flushParagraph();
+                flushQuote();
+                const isOrdered = !!orderedMatch;
+                const currentType = isOrdered ? 'ol' : 'ul';
+                const itemText = this.formatMarkdownInline((unorderedMatch || orderedMatch)[2]);
+
+                if (listType && listType !== currentType) {
+                    flushList();
+                }
+
+                listType = currentType;
+                listItems.push(`<li>${itemText}</li>`);
+                continue;
+            }
+
+            flushQuote();
+            flushList();
+            paragraphLines.push(this.formatMarkdownInline(line));
+        }
+
+        flushParagraph();
+        flushQuote();
+        flushList();
+
+        formatted = blocks.filter(Boolean).join('\n');
+
+        placeholders.forEach((html, index) => {
+            formatted = formatted.replace(`%%FMT_${index}%%`, html);
+        });
+
         return formatted;
+    }
+
+    formatMarkdownInline(text) {
+        let formatted = text;
+        const placeholders = [];
+
+        const stash = (html) => {
+            const token = `%%INLINE_FMT_${placeholders.length}%%`;
+            placeholders.push(html);
+            return token;
+        };
+
+        formatted = formatted.replace(/`([^`\n]+)`/g, (_, code = '') => {
+            return stash(`<code class="message-inline-code">${code}</code>`);
+        });
+
+        formatted = formatted.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label = '', href = '') => {
+            const safeHref = this.sanitizeUrl(href);
+            if (!safeHref) {
+                return `[${label}](${href})`;
+            }
+
+            return stash(`<a class="message-link" href="${safeHref}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+        });
+
+        formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        formatted = formatted.replace(/__(.+?)__/g, '<strong>$1</strong>');
+        formatted = formatted.replace(/(^|[\s(>])\*(?!\s)([^*\n]+?)\*(?=[\s)\].,!?:;]|$)/g, '$1<em>$2</em>');
+        formatted = formatted.replace(/(^|[\s(>])_(?!\s)([^_\n]+?)_(?=[\s)\].,!?:;]|$)/g, '$1<em>$2</em>');
+        formatted = formatted.replace(/~~(.+?)~~/g, '<del>$1</del>');
+        formatted = formatted.replace(/\\\((.+?)\\\)/g, '<span class="math-inline">\\($1\\)</span>');
+        formatted = formatted.replace(/(^|[^\\])\$(?!\$)([^$\n]+?)\$(?!\$)/g, (match, prefix, math) => {
+            const looksLikeMath = /[\\^_=+\-*/<>]|(?:\d.*[A-Za-z])|(?:[A-Za-z].*\d)/.test(math);
+            if (!looksLikeMath) {
+                return match;
+            }
+
+            return `${prefix}<span class="math-inline">\\(${math.trim()}\\)</span>`;
+        });
+
+        placeholders.forEach((html, index) => {
+            formatted = formatted.replace(`%%INLINE_FMT_${index}%%`, html);
+        });
+
+        return formatted;
+    }
+
+    sanitizeUrl(url) {
+        const value = (url ?? '').trim();
+        if (!value) return null;
+
+        if (/^(https?:|mailto:|\/|#)/i.test(value)) {
+            return this.escapeHtml(value);
+        }
+
+        return null;
+    }
+
+    typesetMath(element) {
+        const mathJax = window.MathJax;
+        if (!mathJax || typeof mathJax.typesetPromise !== 'function' || !element) return;
+
+        mathJax.typesetPromise([element]).catch((error) => {
+            console.warn('Failed to typeset math:', error);
+        });
     }
 
     renderSources(sources) {
@@ -379,8 +553,26 @@ class ChatApp {
                                     : (src.document_name || src.title || src.filename || src.source || src.chunk_id || 'Unknown')
                             )}
                         </span>
+                        ${this.renderSourceContext(src)}
                     </div>
                 `).join('')}
+            </div>
+        `;
+    }
+
+    renderSourceContext(src) {
+        if (!src || typeof src === 'string') return '';
+
+        const metadata = src.metadata || {};
+        const before = metadata.formula_context_before || '';
+        const after = metadata.formula_context_after || '';
+        const contextText = [before, after].filter(Boolean).join(' … ');
+
+        if (!contextText) return '';
+
+        return `
+            <div class="source-context">
+                ${this.formatMessage(this.truncateText(contextText, 180))}
             </div>
         `;
     }
@@ -500,6 +692,12 @@ class ChatApp {
     setText(element, value) {
         if (!element) return;
         element.textContent = value;
+    }
+
+    truncateText(text, maxLength = 180) {
+        const value = (text ?? '').toString();
+        if (value.length <= maxLength) return value;
+        return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
     }
 
     setStatusValue(element, value, isOnline) {

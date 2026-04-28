@@ -30,7 +30,7 @@ class AgenticRAG:
     Integration: Workflow Orchestrator for intelligent tool sequencing (Sprint 4, Group 3, Task 2).
     """
 
-    WEB_CONTEXT_MAX_RESULTS = 5
+    WEB_CONTEXT_MAX_RESULTS = 2
     WEB_CONTEXT_MAX_CHARS = 500
     
     def __init__(
@@ -571,6 +571,13 @@ class AgenticRAG:
             evidence_score = max(evidence_score, self._calculate_retrieval_strength(recent_docs))
         logger.info(f"  Evidence score: {evidence_score:.2f}")
 
+        if evidence_score >= max(0.65, self.min_confidence - 0.1) and len(state.retrieved_docs) >= 2:
+            logger.info(
+                f"  DECISION: answer (grounded evidence {evidence_score:.2f} supports answer despite conservative verification)"
+            )
+            logger.info("=" * 80)
+            return "answer"
+
         should_continue, quality_label, quality_reasons = self._should_continue_after_answer(
             state,
             answer,
@@ -599,14 +606,6 @@ class AgenticRAG:
             return "answer"
         else:
             logger.info(f"  Confidence check failed: {state.confidence} < {self.min_confidence}")
-
-        if evidence_score >= max(0.65, self.min_confidence - 0.1) and len(state.retrieved_docs) >= 2:
-            logger.info(
-                f"  DECISION: answer (grounded evidence {evidence_score:.2f} "
-                f"supports answer despite conservative verification)"
-            )
-            logger.info("=" * 80)
-            return "answer"
 
         # Check for information gaps
         has_gaps, gaps = verification_service.detect_information_gaps(
