@@ -41,15 +41,7 @@ Open `/debug` in the browser. Set `DEBUG_MODE=true` in `.env` if you want reload
 
 | API Endpoint | Description |
 | --- | --- |
-| `GET /health` | System health check |
-| `GET /stats` | Chunk and source statistics |
-| `DELETE /reset` | Clear stored chunk data |
-| `GET /agent/status` | Current agent and provider status |
-| `GET /database/status` | Database and maintenance status |
-| `POST /cleanup` | Run cleanup tasks |
 | `POST /ingest` | Upload one document |
-| `POST /ingest/upload` | Upload alias for one document |
-| `POST /ingest/check-duplicates` | Check file existence before upload |
 | `POST /ingest/batch` | Upload multiple documents |
 | `POST /query/agentic` | Full agentic query flow |
 | `POST /query/simple` | Single-pass RAG query |
@@ -59,3 +51,11 @@ Open `/debug` in the browser. Set `DEBUG_MODE=true` in `.env` if you want reload
 | `GET /query/sessions/{session_id}` | Get one session and messages |
 | `PATCH /query/sessions/{session_id}` | Update session title |
 | `DELETE /query/sessions/{session_id}` | Delete a session |
+| `POST /ingest/check-duplicates` | Check file existence before upload |
+| `POST /ingest/upload` | Upload alias for one document |
+| `GET /health` | System health check |
+| `GET /stats` | Chunk and source statistics |
+| `GET /agent/status` | Current agent and provider status |
+| `GET /database/status` | Database and maintenance status |
+| `POST /cleanup` | Run cleanup tasks |
+| `DELETE /reset` | Clear stored chunk data |
