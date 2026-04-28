@@ -1,323 +1,158 @@
-"""
-Upload Testing Tool for RAG System
-Tests document ingestion, batch upload, and duplicate handling.
+from types import SimpleNamespace
 
-Usage:
-    python tests/test_upload.py batch                    # Test batch upload
-    python tests/test_upload.py duplicates               # Test duplicate handling modes
-    python tests/test_upload.py all                      # Run all upload tests
-"""
-import requests
-import tempfile
-import os
-import sys
+import pytest
 
-API_BASE = "http://localhost:8000"
+from app.api.ingest import compute_bytes_hash, get_source_type, ingest_documents_batch
 
-def print_header(title):
-    """Print a formatted header."""
-    print("\n" + "=" * 80)
-    print(title.center(80))
-    print("=" * 80)
 
-def print_section(title):
-    """Print a formatted section."""
-    print("\n" + "-" * 80)
-    print(title)
-    print("-" * 80)
+class _DummyFile:
+    def __init__(self, filename: str, content: bytes = b"sample file"):
+        self.filename = filename
+        self._content = content
+        self.read_calls = 0
 
-def create_sample_file(content, prefix='test'):
-    """Create a sample text file."""
-    fd, path = tempfile.mkstemp(suffix='.txt', prefix=f'{prefix}_')
-    with os.fdopen(fd, 'w') as f:
-        f.write(content)
-    return path
+    async def read(self):
+        self.read_calls += 1
+        return self._content
 
-def create_sample_files(count=3):
-    """Create multiple sample text files for testing."""
-    files = []
-    
-    for i in range(1, count + 1):
-        content = f"""
-Sample Document {i}
 
-This is a test document for batch ingestion.
-It contains some sample content to be processed and indexed.
+class _FakeTable:
+    def __init__(self, result_data=None):
+        self.result_data = result_data if result_data is not None else []
+        self.payload = None
 
-Key information:
-- Document ID: {i}
-- Purpose: Testing batch upload
-- Content: Sample text for RAG system
+    def insert(self, payload):
+        self.payload = payload
+        return self
 
-This document can be used to test the retrieval and query functionality
-of the Agentic RAG system.
-        """
-        
-        path = create_sample_file(content, f'sample_{i}')
-        files.append(path)
-    
-    return files
+    def update(self, payload):
+        self.payload = payload
+        return self
 
-def test_batch_upload():
-    """Test batch document upload."""
-    print_header("BATCH UPLOAD TEST")
-    
-    print("\n1. Creating sample files...")
-    file_paths = create_sample_files(3)
-    print(f"✅ Created {len(file_paths)} sample files")
-    
-    try:
-        print("\n2. Uploading files to server...")
-        
-        # Prepare files for upload
-        files = [
-            ('files', (os.path.basename(path), open(path, 'rb'), 'text/plain'))
-            for path in file_paths
-        ]
-        data = {
-            'source_prefix': 'batch-test',
-            'duplicate_action': 'skip'
+    def delete(self):
+        return self
+
+    def eq(self, *args, **kwargs):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.result_data)
+
+
+class _FakeClient:
+    def __init__(self):
+        self.tables = {
+            "documents_registry": _FakeTable([{"id": 7}]),
+            "rag_chunks": _FakeTable([]),
+            "document_metadata": _FakeTable([]),
         }
-        
-        response = requests.post(f"{API_BASE}/ingest/batch", files=files, data=data)
-        
-        # Close file handles
-        for _, (_, f, _) in files:
-            f.close()
-        
-        if response.status_code == 200:
-            result = response.json()
-            print("✅ Batch upload completed!\n")
-            
-            print_section("Results")
-            if 'results' in result:
-                for item in result['results']:
-                    status = item.get('status') or item.get('action', '').upper() or 'UNKNOWN'
-                    status_icon = "✅" if status == "NEW" else "⚠️"
-                    message = item.get('message') or item.get('error', '')
-                    print(f"{status_icon} {item['filename']}: {status} - {message}")
-            
-            if 'summary' in result:
-                print_section("Summary")
-                summary = result['summary']
-                print(f"Total files: {summary['total']}")
-                print(f"✅ Successful: {summary['successful']}")
-                print(f"⏭️  Skipped: {summary['skipped']}")
-                print(f"❌ Failed: {summary['failed']}")
-        else:
-            print(f"❌ Upload failed with status {response.status_code}")
-            print(response.text)
-    
-    finally:
-        # Cleanup
-        print("\n3. Cleaning up temporary files...")
-        for path in file_paths:
-            try:
-                os.remove(path)
-            except:
-                pass
-        print("✅ Cleanup complete")
 
-def test_duplicate_handling():
-    """Test duplicate file handling with skip, replace, and append modes."""
-    print_header("DUPLICATE HANDLING TEST")
-    
-    # Create test files
-    print("\n1. Creating test files...")
-    file1_path = create_sample_file("Initial content for file 1", "dup_test_1")
-    file2_path = create_sample_file("Initial content for file 2", "dup_test_2")
-    file1_name = os.path.basename(file1_path)
-    file2_name = os.path.basename(file2_path)
-    print(f"✅ Created files: {file1_name}, {file2_name}")
-    
-    try:
-        # Upload initial files
-        print_section("Step 1: Upload initial files")
-        files = [
-            ('files', (file1_name, open(file1_path, 'rb'), 'text/plain')),
-            ('files', (file2_name, open(file2_path, 'rb'), 'text/plain'))
-        ]
-        data = {'source_prefix': 'duplicate-test'}
-        
-        response = requests.post(f"{API_BASE}/ingest/batch", files=files, data=data)
-        for _, (_, f, _) in files:
-            f.close()
-        
-        if response.status_code == 200:
-            result = response.json()
-            print(f"✅ Initial upload: {result['summary']['successful']} files uploaded")
-        else:
-            print(f"❌ Initial upload failed: {response.status_code}")
-            return
-        
-        # Test duplicate check
-        print_section("Step 2: Check for duplicates")
-        check_response = requests.post(
-            f"{API_BASE}/ingest/check-duplicates",
-            json={
-                'filenames': [file1_name, file2_name],
-                'source_prefix': 'duplicate-test'
-            }
-        )
-        
-        if check_response.status_code == 200:
-            duplicates = check_response.json()['duplicates']
-            for dup in duplicates:
-                exists_icon = "✅" if dup['exists'] else "❌"
-                print(f"{exists_icon} {dup['filename']}: exists={dup['exists']}, chunks={dup['chunk_count']}")
-        
-        # Test SKIP mode
-        print_section("Step 3: Test SKIP mode (should skip both)")
-        files = [
-            ('files', (file1_name, open(file1_path, 'rb'), 'text/plain')),
-            ('files', (file2_name, open(file2_path, 'rb'), 'text/plain'))
-        ]
-        data = {'source_prefix': 'duplicate-test', 'duplicate_action': 'skip'}
-        
-        response = requests.post(f"{API_BASE}/ingest/batch", files=files, data=data)
-        for _, (_, f, _) in files:
-            f.close()
-        
-        if response.status_code == 200:
-            result = response.json()
-            print(f"✅ SKIP mode: {result['summary']['skipped']} files skipped")
-        
-        # Test REPLACE mode
-        print_section("Step 4: Test REPLACE mode (should replace)")
-        file1_updated = create_sample_file("UPDATED content for file 1", "dup_test_1")
-        
-        files = [('files', (file1_name, open(file1_updated, 'rb'), 'text/plain'))]
-        data = {'source_prefix': 'duplicate-test', 'duplicate_action': 'replace'}
-        
-        response = requests.post(f"{API_BASE}/ingest/batch", files=files, data=data)
-        for _, (_, f, _) in files:
-            f.close()
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result['results']:
-                print(f"✅ REPLACE mode: {result['results'][0]['status']} - {result['results'][0]['message']}")
-        
-        os.remove(file1_updated)
-        
-        # Test APPEND mode
-        print_section("Step 5: Test APPEND mode (should add more chunks)")
-        file2_extra = create_sample_file("EXTRA content appended to file 2", "dup_test_2")
-        
-        files = [('files', (file2_name, open(file2_extra, 'rb'), 'text/plain'))]
-        data = {'source_prefix': 'duplicate-test', 'duplicate_action': 'append'}
-        
-        response = requests.post(f"{API_BASE}/ingest/batch", files=files, data=data)
-        for _, (_, f, _) in files:
-            f.close()
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result['results']:
-                print(f"✅ APPEND mode: {result['results'][0]['status']} - {result['results'][0]['message']}")
-        
-        os.remove(file2_extra)
-        
-        print_section("Test Complete")
-        print("✅ All duplicate handling modes tested successfully!")
-        
-        print("\n💡 Cleanup: To remove test files from database, use:")
-        print(f"   DELETE /ingest/documents/duplicate-test-{file1_name}")
-        print(f"   DELETE /ingest/documents/duplicate-test-{file2_name}")
-    
-    except Exception as e:
-        print(f"\n❌ Error during test: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    finally:
-        # Cleanup temporary files
-        for path in [file1_path, file2_path]:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except:
-                pass
+    def table(self, name):
+        return self.tables[name]
 
-def show_help():
-    """Show usage information."""
-    print("""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                      Upload Testing Tool                                     ║
-╚══════════════════════════════════════════════════════════════════════════════╝
 
-USAGE:
-    python tests/test_upload.py batch                    # Test batch upload
-    python tests/test_upload.py duplicates               # Test duplicate handling modes
-    python tests/test_upload.py all                      # Run all upload tests
-    python tests/test_upload.py help                     # Show this help message
+class _FakeDB:
+    def __init__(self, source_exists=False, chunk_count=0, inserted_chunks=1):
+        self.source_exists_value = source_exists
+        self.chunk_count_value = chunk_count
+        self.inserted_chunks = inserted_chunks
+        self.deleted_sources = []
+        self.client = _FakeClient()
 
-DESCRIPTION:
-    Tests document ingestion functionality including:
-    • Batch file upload
-    • Duplicate detection
-    • Skip/Replace/Append modes
-    • API error handling
+    async def source_exists(self, source):
+        return self.source_exists_value
 
-PREREQUISITES:
-    • Server running at http://localhost:8000
-    • Ollama running with embeddings model
-    • Supabase database configured
+    async def get_source_chunk_count(self, source):
+        return self.chunk_count_value
 
-EXAMPLES:
-    # Test batch upload only
-    python tests/test_upload.py batch
-    
-    # Test all duplicate handling modes
-    python tests/test_upload.py duplicates
-    
-    # Run full test suite
-    python tests/test_upload.py all
+    async def delete_by_source(self, source):
+        self.deleted_sources.append(source)
+        return self.chunk_count_value
 
-For more information, see README.MD - Multiple File Upload section.
-    """)
+    async def insert_chunks_batch(self, chunks):
+        self.client.tables["documents_registry"].payload = None
+        return self.inserted_chunks
 
-def main():
-    """Main entry point."""
-    if len(sys.argv) < 2:
-        show_help()
-        sys.exit(1)
-    
-    command = sys.argv[1].lower()
-    
-    # Show help without checking server
-    if command in ["help", "-h", "--help"]:
-        show_help()
-        return
-    
-    # Check if server is running for actual tests
-    try:
-        response = requests.get(f"{API_BASE}/health", timeout=2)
-        if response.status_code != 200:
-            print(f"⚠️  Warning: Server returned status {response.status_code}")
-    except requests.exceptions.RequestException:
-        print(f"❌ Error: Cannot connect to server at {API_BASE}")
-        print("Please ensure the server is running: python main.py")
-        sys.exit(1)
-    
-    if command == "batch":
-        test_batch_upload()
-    
-    elif command == "duplicates":
-        test_duplicate_handling()
-    
-    elif command == "all":
-        test_batch_upload()
-        print("\n")
-        test_duplicate_handling()
-    
-    elif command in ["help", "-h", "--help"]:
-        show_help()
-    
-    else:
-        print(f"❌ Unknown command: {command}")
-        show_help()
-        sys.exit(1)
 
-if __name__ == "__main__":
-    main()
+class _FakeProcessor:
+    def __init__(self, valid=True, chunks=None, metadata=None):
+        self.valid = valid
+        self.chunks = chunks or [{"text": "chunk", "metadata": {}}]
+        self.metadata = metadata or {"chunking_method": "fixed"}
+        self.validate_calls = []
+        self.process_calls = []
+
+    def validate_file(self, filename, file_size):
+        self.validate_calls.append((filename, file_size))
+        return self.valid, "Valid"
+
+    async def process_document(self, file_path, source, file_size=None):
+        self.process_calls.append((file_path, source, file_size))
+        return self.chunks, self.metadata
+
+
+def test_hash_and_source_type():
+    assert compute_bytes_hash(b"abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert get_source_type("report.pdf") == "pdf"
+    assert get_source_type("notes.md") == "md"
+    assert get_source_type("archive.zip") == "other"
+
+
+@pytest.mark.asyncio
+async def test_skip_duplicate_marks_status(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    fake_db = _FakeDB(source_exists=True, chunk_count=4)
+    fake_processor = _FakeProcessor()
+    monkeypatch.setattr(ingest_module, "db", fake_db)
+    monkeypatch.setattr(ingest_module, "document_processor", fake_processor)
+
+    file = _DummyFile("report.pdf")
+    result = await ingest_documents_batch([file], source_prefix="docs", duplicate_action="skip")
+
+    assert file.read_calls == 0
+    assert result.successful == 0
+    assert result.failed == 0
+    assert result.results[0]["status"] == "SKIPPED"
+    assert result.results[0]["skipped"] is True
+
+
+@pytest.mark.asyncio
+async def test_append_duplicate_marks_status(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    fake_db = _FakeDB(source_exists=True, chunk_count=2, inserted_chunks=3)
+    fake_processor = _FakeProcessor()
+    monkeypatch.setattr(ingest_module, "db", fake_db)
+    monkeypatch.setattr(ingest_module, "document_processor", fake_processor)
+
+    file = _DummyFile("report.pdf", b"content")
+    result = await ingest_documents_batch([file], source_prefix="docs", duplicate_action="append")
+
+    assert file.read_calls == 1
+    assert fake_processor.process_calls[0][1] == "docs/report.pdf"
+    assert result.successful == 1
+    assert result.results[0]["status"] == "APPENDED"
+    assert result.results[0]["action"] == "appended"
+    assert result.results[0]["existing_chunks"] == 2
+    assert result.results[0]["total_chunks"] == 5
+
+
+@pytest.mark.asyncio
+async def test_replace_duplicate_marks_status(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    fake_db = _FakeDB(source_exists=True, chunk_count=2, inserted_chunks=1)
+    fake_processor = _FakeProcessor()
+    monkeypatch.setattr(ingest_module, "db", fake_db)
+    monkeypatch.setattr(ingest_module, "document_processor", fake_processor)
+
+    file = _DummyFile("report.pdf", b"content")
+    result = await ingest_documents_batch([file], source_prefix="docs", duplicate_action="replace")
+
+    assert file.read_calls == 1
+    assert fake_db.deleted_sources == ["docs/report.pdf"]
+    assert result.successful == 1
+    assert result.results[0]["status"] == "REPLACED"
+    assert result.results[0]["action"] == "replaced"
+    assert result.results[0]["previous_chunks"] == 2

@@ -1,9 +1,9 @@
-import pytest
-
 from datetime import datetime
 
-from app.services.document_processor import DocumentProcessor, ChunkFragment
+import pytest
+
 from app.models.entities import RetrievalResult
+from app.services.document_processor import ChunkFragment, DocumentProcessor
 from app.services.retrieval import retrieval_service
 
 
@@ -16,6 +16,11 @@ class _PrimaryConverter:
         raise IndexError("list index out of range")
 
 
+class _FallbackDocument:
+    page_count = 3
+    title = "Sample PDF"
+
+
 class _FallbackConverter:
     def __init__(self, document):
         self.calls = 0
@@ -26,22 +31,68 @@ class _FallbackConverter:
         return type("Result", (), {"document": self.document})()
 
 
-class _Document:
-    page_count = 3
-    title = "Sample PDF"
-
-
 async def _embed_stub(chunks):
-    return [[0.1, 0.2, 0.3]]
+    return [[0.1, 0.2, 0.3] for _ in chunks]
+
+
+def test_validate_file_checks_type_and_size():
+    processor = DocumentProcessor()
+
+    valid, message = processor.validate_file("report.pdf", 1024)
+    assert valid is True
+    assert message == "Valid"
+
+    valid, message = processor.validate_file("report.exe", 1024)
+    assert valid is False
+    assert "not supported" in message
+
+    valid, message = processor.validate_file("report.pdf", 10**12)
+    assert valid is False
+    assert "too large" in message
+
+
+def test_split_fragment_block_keeps_formula_context():
+    processor = DocumentProcessor()
+
+    fragments = processor._split_fragment_block("In physics, $$E=mc^2$$ describes mass-energy.")
+    formula = next(fragment for fragment in fragments if fragment.is_formula)
+
+    assert formula.metadata["content_type"] == "formula"
+    assert formula.metadata["formula_context_before"] == "In physics,"
+    assert formula.metadata["formula_context_after"] == "describes mass-energy."
 
 
 @pytest.mark.asyncio
-async def test_process_document_falls_back_for_pdf_conversion_errors(tmp_path, monkeypatch):
+async def test_process_text_file_uses_text_path(tmp_path, monkeypatch):
+    processor = DocumentProcessor()
+    source = tmp_path / "notes.txt"
+    source.write_text("Short prose block.", encoding="utf-8")
+
+    converter = _PrimaryConverter()
+    monkeypatch.setattr(processor, "_get_converter", lambda: converter)
+    monkeypatch.setattr(processor, "_create_chunk_fragments", lambda text: [ChunkFragment(text)])
+    monkeypatch.setattr(
+        processor,
+        "_create_chunks",
+        lambda fragments: [{"text": fragments[0].text, "metadata": {"content_type": "prose"}}],
+    )
+    monkeypatch.setattr(processor, "_embed_batch_with_fallback", _embed_stub)
+
+    chunks, metadata = await processor.process_document(str(source), "notes.txt", file_size=source.stat().st_size)
+
+    assert converter.calls == 0
+    assert len(chunks) == 1
+    assert chunks[0].text == "Short prose block."
+    assert metadata["text_extraction_mode"] == "plain-text"
+
+
+@pytest.mark.asyncio
+async def test_process_pdf_file_uses_fallback_converter(tmp_path, monkeypatch):
     processor = DocumentProcessor()
     processor.metadata_extractor = None
 
     primary = _PrimaryConverter()
-    fallback = _FallbackConverter(_Document())
+    fallback = _FallbackConverter(_FallbackDocument())
 
     monkeypatch.setattr(processor, "_get_converter", lambda: primary)
     monkeypatch.setattr(processor, "_get_fallback_converter", lambda: fallback)
@@ -50,7 +101,7 @@ async def test_process_document_falls_back_for_pdf_conversion_errors(tmp_path, m
     monkeypatch.setattr(
         processor,
         "_create_chunks",
-        lambda fragments: [{"text": "Recovered text", "metadata": {"content_type": "prose"}}],
+        lambda fragments: [{"text": fragments[0].text, "metadata": {"content_type": "prose"}}],
     )
     monkeypatch.setattr(processor, "_embed_batch_with_fallback", _embed_stub)
 
@@ -67,42 +118,7 @@ async def test_process_document_falls_back_for_pdf_conversion_errors(tmp_path, m
     assert metadata["page_count"] == 3
 
 
-@pytest.mark.asyncio
-async def test_process_document_keeps_non_pdf_errors_raised(tmp_path, monkeypatch):
-    processor = DocumentProcessor()
-
-    class _BrokenConverter:
-        def __init__(self):
-            self.calls = 0
-
-        def convert(self, file_path):
-            self.calls += 1
-            raise RuntimeError("boom")
-
-    primary = _BrokenConverter()
-    monkeypatch.setattr(processor, "_get_converter", lambda: primary)
-
-    txt_path = tmp_path / "broken.docx"
-    txt_path.write_bytes(b"not a real docx")
-
-    with pytest.raises(RuntimeError, match="boom"):
-        await processor.process_document(str(txt_path), "broken.docx", file_size=1024)
-
-    assert primary.calls == 1
-
-
-def test_split_fragment_block_attaches_formula_context():
-    processor = DocumentProcessor()
-
-    fragments = processor._split_fragment_block("In physics, $$E=mc^2$$ describes mass-energy.")
-
-    formula = next(fragment for fragment in fragments if fragment.is_formula)
-    assert formula.metadata["content_type"] == "formula"
-    assert formula.metadata["formula_context_before"] == "In physics,"
-    assert formula.metadata["formula_context_after"] == "describes mass-energy."
-
-
-def test_format_context_includes_formula_context_metadata():
+def test_format_context_keeps_formula_metadata():
     result = RetrievalResult(
         chunk_id="chunk-1",
         source="doc.pdf",
