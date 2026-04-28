@@ -3,7 +3,7 @@ Entity models for the RAG system.
 These represent core domain objects and database entities.
 """
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -16,6 +16,7 @@ class RAGChunk(BaseModel):
     ai_provider: str = "ollama"
     embedding_model: str
     embedding: List[float]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
     
     class Config:
@@ -30,7 +31,12 @@ class RetrievalResult(BaseModel):
     embedding_model: str
     text: str
     similarity: float
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+    title: Optional[str] = None
+    url: Optional[str] = None
+    rerank_score: Optional[float] = None
+    diversity_score: Optional[float] = None
     
     class Config:
         from_attributes = True
@@ -41,6 +47,8 @@ class AgentState(BaseModel):
     iteration: int = 0
     original_query: str
     current_query: str
+    search_query: Optional[str] = None
+    conversation_context: Optional[str] = None
     plan: Optional[str] = None
     retrieved_docs: List[RetrievalResult] = Field(default_factory=list)
     reasoning: List[str] = Field(default_factory=list)

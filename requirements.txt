@@ -5,7 +5,19 @@ pydantic>=2.0.0
 pydantic-settings>=2.0.0
 supabase>=2.0.0
 ollama>=0.3.0
-# openai>=1.0.0  # Optional, only needed when AI_PROVIDER=openai
 rich>=13.0.0
 python-multipart>=0.0.9
-docling>=2.0.0       
+docling>=2.0.0
+hf_xet
+
+# Testing
+pytest>=9.0.0
+pytest-asyncio>=0.23.0
+
+# Cloud AI Providers (optional - install as needed)
+openai>=1.0.0
+anthropic>=0.34.0
+google-generativeai>=0.8.0
+groq>=0.4.0
+
+langsmith>=0.3.0

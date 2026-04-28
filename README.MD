@@ -8,12 +8,17 @@ A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with mul
 - **✓ Hallucination Prevention**: Ground checking, citation requirements, and confidence scoring
 - **🔄 Iterative Query Refinement**: Agent refines queries based on retrieved information
 - **📄 Multi-Format Documents**: Process PDF, DOCX, PPTX, HTML, Markdown using Docling
-- **🔍 Vector Semantic Search**: Fast similarity search with Supabase pgvector
+- **🔍 Hybrid Search**: Vector + keyword search with RRF fusion and metadata filtering (Sprint 4)
 - **✅ Verification System**: Validates answers against retrieved context
 - **🌐 REST API**: Clean FastAPI endpoints with auto-generated docs
 - **🖥️ Debug Web UI**: Real-time visualization of agent reasoning
+- **🧮 Formula-Aware Ingestion**: Standalone equation chunks preserved with metadata
+- **🧠 Memory-Safe PDF Processing**: Large PDFs switch to a lighter Docling path
 - **📤 Batch Upload**: Multiple file upload with duplicate detection
 - **🔄 Smart Duplicate Handling**: Skip, Replace, or Append modes for existing files
+- **🛠️ Intelligent Tool Routing**: Query classification with automatic tool selection (Sprint 4)
+- **⚙️ Multi-Tool Workflows**: Sequential/parallel/conditional execution with fallbacks (Sprint 4)
+- **📋 Frontend State Management**: Pub/sub state system with localStorage persistence (Sprint 4)
 
 ## 🏗️ Architecture
 
@@ -21,7 +26,7 @@ A sophisticated **Agentic RAG (Retrieval-Augmented Generation)** system with mul
 - **Frontend**: Web UI with chat interface
 - **Backend**: FastAPI with REST endpoints
 - **Vector Database**: Supabase (PostgreSQL + pgvector)
-- **AI**: Ollama (local LLM + embeddings)
+- **AI**: OpenAI and OpenRouter for production cloud usage, Ollama for local production or fallback
 - **Document Processing**: Docling (multi-format support)
 
 **Core Components:**
@@ -65,6 +70,14 @@ cp .env.example .env
 # Edit .env and add your Supabase credentials:
 # - SUPABASE_URL
 # - SUPABASE_SERVICE_ROLE_KEY
+# Optional AI providers:
+# - OPENROUTER_API_KEY / OPENROUTER_MODEL
+# - OPENAI_API_KEY / OPENAI_MODEL
+# Optional web search / observability:
+# - TAVILY_API_KEY
+# - LANGSMITH_ENABLED
+# - LANGSMITH_API_KEY
+# - LANGSMITH_PROJECT
 ```
 
 #### Step 5: Start the Server
@@ -87,12 +100,12 @@ Open http://localhost:8000 in your browser and upload documents directly.
 
 #### Option B: Seed Sample Data
 ```bash
-python seed_sample.py
+python tools\debug\seed_sample.py
 ```
 
 #### Option C: Test with Python
 ```bash
-python test_agent.py
+python tests/test_agent.py
 ```
 
 #### Option D: Use cURL
@@ -130,6 +143,224 @@ An interactive chat-style debugging interface at `/debug` that provides real-tim
 - Keep **Debug ON** during development to see full reasoning process
 - **Check Reasoning Trace** to understand how the agent reached its answer
 - **Review Sources** to verify answer is grounded in retrieved documents
+
+## 🌳 Hierarchical Agent Display (Sprint 5)
+
+A comprehensive hierarchical visualization system for displaying main agent and spawned sub-agents in the web UI.
+
+### Features
+- **🎯 Agent Hierarchy Panel**: Tree view showing main agent → sub-agents relationships
+- **📊 Real-time Metrics**: Duration, retrieved documents, iterations, confidence scores
+- **🧠 Reasoning Traces**: Step-by-step reasoning from all agents (main + sub-agents)
+- **📈 Performance Timeline**: Visual timeline of all reasoning steps
+- **🔄 Expand/Collapse**: Interactive expand/collapse for each agent node
+- **🎨 Color Coding**: Different colors for different agent types
+- **📱 Responsive Design**: Mobile-friendly layout with adaptive grid
+
+### Components
+
+#### AgentHierarchyPanel
+Displays the hierarchical tree of agents with real-time updates.
+
+```javascript
+// Usage
+const hierarchyPanel = new AgentHierarchyPanel('agent-hierarchy-container');
+```
+
+**Features:**
+- Main agent at the top (purple badge)
+- Sub-agents indented below (color-coded by type)
+- Status indicators (running/completed)
+- Expandable reasoning traces
+- Per-agent metrics display
+
+**Agent Types & Colors:**
+- Main: #667eea (blue)
+- full_document: #8b5cf6 (purple)
+- comparison: #06b6d4 (cyan)
+- extraction: #10b981 (green)
+- search: #f59e0b (amber)
+
+#### ReasoningTimeline
+Shows a chronological timeline of all reasoning steps across all agents.
+
+```javascript
+// Usage
+const timeline = new ReasoningTimeline('reasoning-timeline-container');
+```
+
+**Features:**
+- Vertical timeline with connecting line
+- Icon indicators for step types (🔍 search, 🔀 decompose, 🚀 spawn, ✅ complete, ❌ error)
+- Clickable steps
+- Scrollable for long workflows
+
+#### MetricsPanel
+Displays aggregated performance metrics.
+
+```javascript
+// Usage
+const metrics = new MetricsPanel('metrics-panel-container');
+```
+
+**Metrics:**
+- Total Duration: Sum of all agent durations
+- Documents Retrieved: Count of unique documents
+- Agent Count: Total agents (main + sub-agents)
+- Confidence Score: Main agent's confidence
+
+### State Manager Actions
+
+#### recordSubAgentSpawn
+Log when a sub-agent is spawned.
+
+```javascript
+const agentId = await stateManager.dispatch('recordSubAgentSpawn', {
+    agentType: 'full_document',      // Type of sub-agent
+    context: 'Processing full document',  // Context info
+    reasoning: ['Step 1', 'Step 2']  // Initial reasoning steps
+});
+```
+
+#### recordSubAgentResult
+Record completion of a sub-agent.
+
+```javascript
+await stateManager.dispatch('recordSubAgentResult', {
+    subAgentId: agentId,             // ID returned from spawn
+    result: 'Processing complete',   // Result text
+    reasoning: ['Analysis 1', 'Analysis 2'],  // Final reasoning
+    metrics: {
+        retrievedDocuments: 10,
+        confidence: 0.85
+    }
+});
+```
+
+#### updateMainAgentMetrics
+Update main agent's performance metrics.
+
+```javascript
+await stateManager.dispatch('updateMainAgentMetrics', {
+    metrics: {
+        duration: 5.5,
+        retrievedDocuments: 15,
+        iterations: 2,
+        confidence: 0.92
+    }
+});
+```
+
+#### updateMainAgentReasoning
+Update main agent's reasoning trace.
+
+```javascript
+await stateManager.dispatch('updateMainAgentReasoning', {
+    reasoning: [
+        'Analyzed query complexity',
+        'Detected multi-step scenario',
+        'Spawning specialized sub-agents'
+    ]
+});
+```
+
+#### updateAgentHierarchy
+Update the entire agent hierarchy at once.
+
+```javascript
+await stateManager.dispatch('updateAgentHierarchy', {
+    hierarchy: {
+        mainAgent: { /* ... */ },
+        subAgents: [ /* ... */ ],
+        expandedAgents: { /* ... */ }
+    }
+});
+```
+
+#### toggleAgentExpanded
+Toggle expand/collapse state for an agent.
+
+```javascript
+await stateManager.dispatch('toggleAgentExpanded', {
+    agentId: 'agent-uuid-or-main'
+});
+```
+
+#### clearAgentHierarchy
+Clear all agents and reset to initial state.
+
+```javascript
+await stateManager.dispatch('clearAgentHierarchy');
+```
+
+### Integration Example
+
+```javascript
+// When spawning a sub-agent in your code
+const agentId = await stateManager.dispatch('recordSubAgentSpawn', {
+    agentType: 'full_document',
+    context: 'Processing document set',
+    reasoning: ['Detected full document requirement']
+});
+
+// Update main agent reasoning
+await stateManager.dispatch('updateMainAgentReasoning', {
+    reasoning: ['Query analyzed', 'Spawning full_document sub-agent']
+});
+
+// ... perform work ...
+
+// Record the result
+await stateManager.dispatch('recordSubAgentResult', {
+    subAgentId: agentId,
+    result: 'Extracted 25 relevant sections',
+    reasoning: ['Processing complete', 'Results aggregated'],
+    metrics: {
+        retrievedDocuments: 25,
+        confidence: 0.88
+    }
+});
+
+// Update main agent final metrics
+await stateManager.dispatch('updateMainAgentMetrics', {
+    metrics: {
+        duration: 8.5,
+        retrievedDocuments: 30,
+        iterations: 2,
+        confidence: 0.90
+    }
+});
+```
+
+### Testing
+
+#### Test State Manager Actions
+Open `http://localhost:8000/test-state-manager.html` to run comprehensive tests of all state management actions.
+
+#### Test UI Components
+Open `http://localhost:8000/test-hierarchy.html` to interactively test the UI components with simulated agent data.
+
+**Test Controls:**
+- 📌 Spawn Sub-Agent: Creates a random sub-agent
+- ✅ Complete Sub-Agent: Marks the last sub-agent as complete
+- 📊 Update Metrics: Updates main agent metrics with random values
+- 🔄 Toggle Expand: Toggles main agent expansion
+- 🗑️ Clear Hierarchy: Resets all agents
+- ▶️ Simulate Full Workflow: Runs a complete multi-step workflow
+
+### Styling
+
+The components use a dark theme matching the existing UI with CSS custom properties for colors:
+
+- **Primary**: #667eea (blue)
+- **Secondary**: #764ba2 (purple)
+- **Success**: #22c55e (green)
+- **Warning**: #fb923c (orange)
+- **Error**: #ef4444 (red)
+- **Background**: #0f172a (dark)
+- **Surface**: #1e293b (darker)
+
+All components are fully responsive and work on mobile/tablet/desktop.
 
 ## 📤 Multiple File Upload with Duplicate Detection
 
@@ -649,16 +880,16 @@ All-in-one debugging tool for troubleshooting RAG system issues.
 
 ```bash
 # Test a single query with detailed debug output
-python debug.py query "What is Deep Q Learning?"
+python tools\debug\debug.py query "What is Deep Q Learning?"
 
 # Interactive mode for multiple queries
-python debug.py interactive
+python tools\debug\debug.py interactive
 
 # Test Ollama connection directly (isolate connection issues)
-python debug.py ollama
+python tools\debug\debug.py ollama
 
 # Show help
-python debug.py help
+python tools\debug\debug.py help
 ```
 
 **When to use:**
@@ -672,16 +903,16 @@ Consolidated tool for testing document ingestion functionality.
 
 ```bash
 # Test batch file upload
-python test_upload.py batch
+python tests/test_upload.py batch
 
 # Test duplicate handling (skip, replace, append modes)
-python test_upload.py duplicates
+python tests/test_upload.py duplicates
 
 # Run all upload tests
-python test_upload.py all
+python tests/test_upload.py all
 
 # Show help
-python test_upload.py help
+python tests/test_upload.py help
 ```
 
 **Tests included:**
@@ -692,13 +923,13 @@ python test_upload.py help
 
 ### 🤖 Agent Testing
 ```bash
-python test_agent.py
+python tests/test_agent.py
 ```
 Tests the core agentic reasoning loop with predefined queries. Best for smoke testing after code changes.
 
 ### 🌱 Seed Sample Data
 ```bash
-python seed_sample.py
+python tools\debug\seed_sample.py
 ```
 Populates the database with sample documents for testing queries.
 
@@ -733,13 +964,13 @@ To get better APA citations, consider:
 
 ```bash
 # Test a single query with full debug output (RECOMMENDED)
-python debug.py query "Your question here"
+python tools\debug\debug.py query "Your question here"
 
 # Interactive debugging session
-python debug.py interactive
+python tools\debug\debug.py interactive
 
 # Test Ollama connection
-python debug.py ollama
+python tools\debug\debug.py ollama
 
 # Alternative: Test model directly via CLI
 ollama run llama3.1:8b "test"

@@ -45,7 +45,8 @@ class SupabaseClient:
                 "text": chunk.text,
                 "ai_provider": chunk.ai_provider,
                 "embedding_model": chunk.embedding_model,
-                "embedding": chunk.embedding
+                "embedding": chunk.embedding,
+                "metadata": chunk.metadata
             }
             
             result = self.client.table("rag_chunks").insert(data).execute()
@@ -64,7 +65,8 @@ class SupabaseClient:
                     "text": chunk.text,
                     "ai_provider": chunk.ai_provider,
                     "embedding_model": chunk.embedding_model,
-                    "embedding": chunk.embedding
+                    "embedding": chunk.embedding,
+                    "metadata": chunk.metadata
                 }
                 for chunk in chunks
             ]
@@ -136,6 +138,43 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Error listing sources: {e}")
             return []
+
+    async def get_document_display_name(self, source: str) -> str:
+        """Resolve a human-friendly document name for a source."""
+        try:
+            registry_result = self.client.table("documents_registry") \
+                .select("id, filename, source") \
+                .eq("source", source) \
+                .limit(1) \
+                .execute()
+
+            if not registry_result.data:
+                return source
+
+            document = registry_result.data[0]
+            document_id = document.get("id")
+            fallback_name = document.get("filename") or source
+
+            if not document_id:
+                return fallback_name
+
+            metadata_result = self.client.table("document_metadata") \
+                .select("key, value, value_json") \
+                .eq("document_id", document_id) \
+                .eq("key", "title") \
+                .limit(1) \
+                .execute()
+
+            if metadata_result.data:
+                metadata_row = metadata_result.data[0]
+                title = metadata_row.get("value_json") or metadata_row.get("value")
+                if title:
+                    return str(title)
+
+            return fallback_name
+        except Exception as e:
+            logger.warning(f"Error resolving document display name for '{source}': {e}")
+            return source
     
     async def source_exists(self, source: str) -> bool:
         """Check if a source already exists in the database."""
@@ -178,3 +217,14 @@ class SupabaseClient:
 
 # Global database client instance
 db = SupabaseClient()
+
+# Expose the Supabase client for direct access
+supabase = db.client
+
+
+def get_supabase_client() -> Client:
+    """
+    Get the global Supabase client instance.
+    Backward compatibility function for code that expects this interface.
+    """
+    return db.client

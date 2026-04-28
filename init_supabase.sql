@@ -21,23 +21,62 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- =============================================================================
--- STEP 2: Create the main RAG chunks table
+-- STEP 2: Create documents_registry table (admin-only ingestion, no user ownership)
+-- =============================================================================
+
+CREATE TABLE documents_registry (
+    id BIGSERIAL PRIMARY KEY,
+    filename TEXT NOT NULL,
+    source TEXT UNIQUE,
+    file_hash TEXT NOT NULL UNIQUE,
+    file_size BIGINT NOT NULL,
+    upload_date TIMESTAMPTZ DEFAULT now(),
+    source_type TEXT NOT NULL CHECK (source_type IN ('pdf', 'docx', 'pptx', 'html', 'markdown', 'txt', 'other')),
+    status TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed', 'failed')),
+    chunk_count INT DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Indexes for documents_registry
+CREATE INDEX documents_registry_hash_idx ON documents_registry (file_hash);
+CREATE INDEX documents_registry_filename_idx ON documents_registry (filename);
+CREATE INDEX documents_registry_upload_date_idx ON documents_registry (upload_date DESC);
+CREATE INDEX documents_registry_status_idx ON documents_registry (status);
+
+-- Enable RLS on documents_registry
+ALTER TABLE documents_registry ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy (for DEBUG/backend access)
+CREATE POLICY "Service role full access" ON documents_registry
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- =============================================================================
+-- STEP 3: Create the main RAG chunks table (now can reference documents_registry)
 -- =============================================================================
 
 CREATE TABLE rag_chunks (
     id BIGSERIAL PRIMARY KEY,
     chunk_id TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL,
+    document_id BIGINT,
     text TEXT NOT NULL,
     ai_provider TEXT NOT NULL DEFAULT 'ollama' CHECK (ai_provider IN ('ollama', 'openai')),
     embedding_model TEXT NOT NULL DEFAULT 'mxbai-embed-large',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     embedding VECTOR NOT NULL,  -- Supports multiple dimensions (for example 1024 and 1536)
     CHECK (vector_dims(embedding) IN (1024, 1536)),
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Add foreign key constraint to documents_registry (with cascade delete)
+ALTER TABLE rag_chunks 
+ADD CONSTRAINT fk_rag_chunks_document_id 
+FOREIGN KEY (document_id) REFERENCES documents_registry(id) ON DELETE CASCADE;
+
 -- =============================================================================
--- STEP 3: Create performance indexes for fast vector search
+-- STEP 4: Create performance indexes for fast vector search
 -- =============================================================================
 
 -- Create per-dimension vector indexes for supported embedding models.
@@ -60,9 +99,10 @@ CREATE INDEX rag_chunks_chunk_id_idx ON rag_chunks (chunk_id);
 CREATE INDEX rag_chunks_created_at_idx ON rag_chunks (created_at DESC);
 CREATE INDEX rag_chunks_provider_idx ON rag_chunks (ai_provider);
 CREATE INDEX rag_chunks_model_idx ON rag_chunks (embedding_model);
+CREATE INDEX rag_chunks_document_id_idx ON rag_chunks (document_id);
 
 -- =============================================================================
--- STEP 4: Create vector similarity search function
+-- STEP 5: Create vector similarity search function
 -- =============================================================================
 
 CREATE OR REPLACE FUNCTION match_chunks (
@@ -80,6 +120,7 @@ RETURNS TABLE (
   embedding_model text,
   text text,
   similarity float,
+  metadata jsonb,
   created_at timestamptz
 )
 LANGUAGE plpgsql
@@ -93,6 +134,7 @@ BEGIN
     rag_chunks.embedding_model,
     rag_chunks.text,
     1 - (rag_chunks.embedding <=> query_embedding) as similarity,
+    rag_chunks.metadata,
     rag_chunks.created_at
   FROM rag_chunks
   WHERE vector_dims(rag_chunks.embedding) = vector_dims(query_embedding)
@@ -207,10 +249,189 @@ SELECT
 FROM get_chunk_stats();
 
 -- =============================================================================
+-- STEP 8: Create document_metadata table (admin-only ingestion metadata)
+-- =============================================================================
+
+CREATE TABLE document_metadata (
+    id BIGSERIAL PRIMARY KEY,
+    document_id BIGINT NOT NULL REFERENCES documents_registry(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    value_json JSONB,
+    extracted_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(document_id, key)
+);
+
+-- Indexes for document_metadata
+CREATE INDEX document_metadata_doc_id_idx ON document_metadata (document_id);
+CREATE INDEX document_metadata_key_idx ON document_metadata (key);
+CREATE INDEX document_metadata_json_idx ON document_metadata USING gin (value_json);
+
+-- Enable RLS on document_metadata
+ALTER TABLE document_metadata ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy
+CREATE POLICY "Service role full access" ON document_metadata
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- =============================================================================
+-- STEP 9: Add full-text search to rag_chunks (Phase 2.5)
+-- =============================================================================
+
+-- Add tsvector column for full-text search
+ALTER TABLE rag_chunks ADD COLUMN text_search tsvector;
+
+-- Create GIN index for fast full-text search
+CREATE INDEX rag_chunks_text_search_idx ON rag_chunks USING gin (text_search);
+
+-- Create trigger to automatically update tsvector on insert/update
+CREATE OR REPLACE FUNCTION update_text_search()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.text_search := to_tsvector('english', NEW.text);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_text_search
+BEFORE INSERT OR UPDATE ON rag_chunks
+FOR EACH ROW
+EXECUTE FUNCTION update_text_search();
+
+-- Update existing rows
+UPDATE rag_chunks SET text_search = to_tsvector('english', text) WHERE text_search IS NULL;
+
+-- =============================================================================
+-- STEP 11: Create helper functions for cleanup
+-- =============================================================================
+
+-- Function to cleanup orphaned chunks (chunks without a document)
+CREATE OR REPLACE FUNCTION cleanup_orphaned_chunks()
+RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    DELETE FROM rag_chunks
+    WHERE document_id IS NULL 
+       OR document_id NOT IN (SELECT id FROM documents_registry);
+    
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$;
+
+-- Function to cleanup old failed documents
+CREATE OR REPLACE FUNCTION cleanup_failed_documents(hours INTEGER DEFAULT 24)
+RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    DELETE FROM documents_registry
+    WHERE status = 'failed'
+      AND created_at < NOW() - (hours || ' hours')::INTERVAL;
+    
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$;
+
+-- =============================================================================
+-- STEP 12: Create chat sessions tables (Phase 2)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id UUID DEFAULT auth.uid(),
+    title TEXT NOT NULL DEFAULT 'New Chat',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id BIGSERIAL PRIMARY KEY,
+    session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    user_id UUID DEFAULT auth.uid(),
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Indexes for chat tables
+CREATE INDEX chat_messages_session_id_idx ON chat_messages (session_id);
+CREATE INDEX chat_sessions_updated_at_idx ON chat_sessions (updated_at DESC);
+CREATE INDEX chat_sessions_user_id_idx ON chat_sessions (user_id, created_at DESC);
+CREATE INDEX chat_messages_user_id_idx ON chat_messages (user_id, created_at DESC);
+
+-- Enable RLS on chat_sessions
+ALTER TABLE chat_sessions ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy
+CREATE POLICY "Service role full access" ON chat_sessions
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- User read access
+CREATE POLICY "Users can read own sessions" ON chat_sessions
+  FOR SELECT USING (auth.uid() = user_id);
+
+-- User insert access (default user_id)
+CREATE POLICY "Users can create own sessions" ON chat_sessions
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- User update access
+CREATE POLICY "Users can update own sessions" ON chat_sessions
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- User delete access
+CREATE POLICY "Users can delete own sessions" ON chat_sessions
+  FOR DELETE USING (auth.uid() = user_id);
+
+-- Enable RLS on chat_messages
+ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
+
+-- Service role policy
+CREATE POLICY "Service role full access" ON chat_messages
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- User read access (only messages from their sessions)
+CREATE POLICY "Users can read own messages" ON chat_messages
+  FOR SELECT USING (
+    auth.uid() = user_id AND EXISTS (
+      SELECT 1 FROM chat_sessions 
+      WHERE chat_sessions.id = chat_messages.session_id 
+      AND chat_sessions.user_id = auth.uid()
+    )
+  );
+
+-- User insert access (default user_id)
+CREATE POLICY "Users can create own messages" ON chat_messages
+  FOR INSERT WITH CHECK (
+    auth.uid() = user_id AND EXISTS (
+      SELECT 1 FROM chat_sessions 
+      WHERE chat_sessions.id = session_id 
+      AND chat_sessions.user_id = auth.uid()
+    )
+  );
+
+-- User update access
+CREATE POLICY "Users can update own messages" ON chat_messages
+  FOR UPDATE USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- User delete access
+CREATE POLICY "Users can delete own messages" ON chat_messages
+  FOR DELETE USING (auth.uid() = user_id);
+
+-- =============================================================================
 -- SUCCESS MESSAGE
 -- =============================================================================
 
-SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG!' as final_result;
+SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG with RLS!' as final_result;
 
 -- =============================================================================
 -- WHAT WAS CREATED:
@@ -221,18 +442,41 @@ SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG!' as final_result;
 -- 
 -- ✅ Tables:
 --    - rag_chunks (with VECTOR for multi-model dimensions)
+--    - documents_registry (admin-only)
+--    - document_metadata (admin-only)
+--    - chat_sessions (with user_id for RLS)
+--    - chat_messages (with user_id for RLS)
 -- 
 -- ✅ Indexes:
 --    - IVFFlat vector indexes for 1024 and 1536 dimensions
 --    - B-tree indexes for fast filtering
+--    - User-scoped indexes: (user_id, created_at DESC) on chat tables
 -- 
 -- ✅ Functions:
 --    - match_chunks() - vector similarity search
 --    - get_chunk_stats() - database statistics
+--    - cleanup_orphaned_chunks() - cleanup helper
+--    - cleanup_failed_documents() - cleanup helper
 -- 
--- ✅ Security:
---    - Row Level Security enabled
---    - Policies for service role, authenticated users, and anonymous access
+-- ✅ Security (Row Level Security):
+--    - rag_chunks: anonymous/authenticated read access
+--    - documents_registry: service role bypass only
+--    - document_metadata: service role bypass only
+--    - chat_sessions: user-scoped access + service role bypass
+--    - chat_messages: user-scoped access with session isolation + service role bypass
+--
+--    For chat tables:
+--      • Service role can access everything (FOR ALL)
+--      • Users can SELECT only their own records (user_id = auth.uid())
+--      • Users can INSERT only with their user_id
+--      • Users can UPDATE only their own records
+--      • Users can DELETE only their own records
+-- 
+-- ✅ Multi-User Isolation:
+--    - All user tables default user_id to auth.uid()
+--    - Policies enforce user_id ownership at database level
+--    - Foreign key cascades maintain isolation boundaries
+--    - Service role (backend) can bypass RLS for admin operations
 -- 
 -- =============================================================================
 -- NEXT STEPS:
@@ -246,21 +490,25 @@ SELECT '🎉 SUCCESS! Your Supabase database is ready for RAG!' as final_result;
 --    OLLAMA_EMBED_MODEL=mxbai-embed-large
 --    OPENAI_EMBED_MODEL=text-embedding-3-small
 -- 
--- 2. Start your FastAPI backend:
+-- 2. Update your Python backend to use service_role for admin operations
+--    (e.g., seeding, migrations, batch operations)
+-- 
+-- 3. Start your FastAPI backend:
 --    uvicorn main:app --reload --port 8000
 -- 
--- 3. Test the health check:
+-- 4. Test the health check:
 --    curl http://localhost:8000/healthz
 -- 
--- 4. Seed your knowledge base:
+-- 5. Seed your knowledge base (using service role):
 --    curl -X POST http://localhost:8000/seed
 -- 
--- 5. Ask your first question:
+-- 6. Ask your first question (using authenticated token):
 --    curl -X POST http://localhost:8000/answer \
+--      -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
 --      -H "Content-Type: application/json" \
 --      -d '{"query": "What is your return policy?"}'
 -- 
--- 6. Visit interactive docs:
+-- 7. Visit interactive docs:
 --    http://localhost:8000/docs
 -- 
 -- =============================================================================

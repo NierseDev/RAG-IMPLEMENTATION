@@ -6,6 +6,8 @@ from typing import Optional, List
 import tempfile
 import os
 import time
+import hashlib
+from datetime import datetime
 from app.models.responses import IngestResponse, DocumentListResponse, BatchIngestResponse
 from app.services.document_processor import document_processor
 from app.core.database import db
@@ -14,6 +16,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingest", tags=["Ingestion"])
+
+
+def compute_bytes_hash(data: bytes) -> str:
+    """Compute SHA256 hash of bytes."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def get_source_type(filename: str) -> str:
+    """Extract source type from filename extension."""
+    ext = os.path.splitext(filename)[1].lower().lstrip('.')
+    valid_types = ('pdf', 'docx', 'pptx', 'html', 'markdown', 'txt', 'md')
+    return ext if ext in valid_types else 'other'
 
 
 @router.post("", response_model=IngestResponse)
@@ -41,14 +55,29 @@ async def ingest_document(
         if not valid:
             raise HTTPException(status_code=400, detail=message)
         
+        # Sprint 3: Calculate file hash for duplicate detection
+        file_hash = compute_bytes_hash(content)
+        
+        # Sprint 3: Check for duplicates
+        duplicate = await document_processor.check_duplicate(file_hash)
+        validation_warnings = []
+        
+        if duplicate:
+            validation_warnings.append(f"File already exists (uploaded {duplicate['upload_date']})")
+            # For now, proceed anyway - could add duplicate_mode parameter
+        
         # Save to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
         
         try:
-            # Process document
-            chunks, metadata = await document_processor.process_document(tmp_path, source)
+            # Process document (Sprint 3: now includes metadata extraction)
+            chunks, metadata = await document_processor.process_document(
+                file_path=tmp_path,
+                source=source,
+                file_size=file_size
+            )
             
             if not chunks:
                 raise HTTPException(status_code=400, detail="No content could be extracted from document")
@@ -56,15 +85,62 @@ async def ingest_document(
             # Store chunks in database
             inserted = await db.insert_chunks_batch(chunks)
             
+            # Create document registry entry (Sprint 5: ensure registry is populated)
+            try:
+                registry_entry = {
+                    "filename": file.filename,
+                    "source": source,
+                    "file_hash": file_hash,
+                    "file_size": file_size,
+                    "source_type": get_source_type(file.filename),
+                    "status": "completed",
+                    "chunk_count": inserted
+                }
+                client = db.client
+                response = client.table('documents_registry').insert(registry_entry).execute()
+                
+                # If registry entry was created, insert metadata rows
+                if response.data:
+                    document_id = response.data[0].get('id')
+                    
+                    # Link chunks to document by updating their document_id
+                    try:
+                        client.table('rag_chunks') \
+                            .update({'document_id': document_id}) \
+                            .eq('source', source) \
+                            .execute()
+                    except Exception as chunk_link_error:
+                        logger.warning(f"Could not link chunks to document: {chunk_link_error}")
+                    
+                    # Insert metadata key-value pairs
+                    for key, value in metadata.items():
+                        try:
+                            meta_entry = {
+                                "document_id": document_id,
+                                "key": key,
+                                "value": str(value),
+                                "value_json": value if isinstance(value, (dict, list)) else None
+                            }
+                            client.table('document_metadata').insert(meta_entry).execute()
+                        except Exception as me:
+                            logger.warning(f"Could not save metadata key '{key}': {me}")
+            except Exception as e:
+                logger.error(f"Error saving to documents_registry: {e}. Chunks were still inserted.")
+            
             processing_time = time.time() - start_time
             
+            # Sprint 3: Enhanced response with validation and metadata
             return IngestResponse(
                 success=True,
-                message=f"Document processed successfully",
+                message=f"Document processed successfully using {metadata.get('chunking_method', 'default')} chunking",
                 source=source,
                 chunks_created=inserted,
                 file_size=file_size,
-                processing_time=processing_time
+                processing_time=processing_time,
+                file_hash=file_hash,
+                duplicate_action="appended" if duplicate else "new",
+                validation_warnings=validation_warnings,
+                metadata_extracted=metadata
             )
             
         finally:
@@ -77,6 +153,18 @@ async def ingest_document(
     except Exception as e:
         logger.error(f"Error ingesting document: {e}")
         raise HTTPException(status_code=500, detail=f"Ingestion error: {str(e)}")
+
+
+@router.post("/upload", response_model=IngestResponse)
+async def ingest_document_upload(
+    file: UploadFile = File(...),
+    source: Optional[str] = Form(None)
+):
+    """
+    Alias endpoint for uploading a document.
+    Delegates to the main ingest_document endpoint.
+    """
+    return await ingest_document(file=file, source=source)
 
 
 @router.post("/check-duplicates")
@@ -166,6 +254,7 @@ async def ingest_documents_batch(
                         "filename": file.filename,
                         "success": False,
                         "skipped": True,
+                        "status": "SKIPPED",
                         "error": f"File already exists with {existing_chunk_count} chunks. Use 'replace' or 'append' to update.",
                         "chunks_created": 0,
                         "existing_chunks": existing_chunk_count
@@ -186,6 +275,7 @@ async def ingest_documents_batch(
                 results.append({
                     "filename": file.filename,
                     "success": False,
+                    "status": "FAILED",
                     "error": message,
                     "chunks_created": 0
                 })
@@ -205,6 +295,7 @@ async def ingest_documents_batch(
                     results.append({
                         "filename": file.filename,
                         "success": False,
+                        "status": "FAILED",
                         "error": "No content could be extracted",
                         "chunks_created": 0
                     })
@@ -213,6 +304,49 @@ async def ingest_documents_batch(
                 # Store chunks in database
                 inserted = await db.insert_chunks_batch(chunks)
                 total_chunks += inserted
+                
+                # Create document registry entry (Sprint 5: ensure registry is populated)
+                try:
+                    registry_entry = {
+                        "filename": file.filename,
+                        "source": source,
+                        "file_hash": compute_bytes_hash(content),
+                        "file_size": file_size,
+                        "source_type": get_source_type(file.filename),
+                        "status": "completed",
+                        "chunk_count": inserted
+                    }
+                    client = db.client
+                    response = client.table('documents_registry').insert(registry_entry).execute()
+                    
+                    # If registry entry was created, insert metadata rows
+                    if response.data:
+                        document_id = response.data[0].get('id')
+                        
+                        # Link chunks to document by updating their document_id
+                        try:
+                            client.table('rag_chunks') \
+                                .update({'document_id': document_id}) \
+                                .eq('source', source) \
+                                .execute()
+                        except Exception as chunk_link_error:
+                            logger.warning(f"Could not link chunks to document for {source}: {chunk_link_error}")
+                        
+                        # Insert metadata key-value pairs
+                        for key, value in metadata.items():
+                            try:
+                                meta_entry = {
+                                    "document_id": document_id,
+                                    "key": key,
+                                    "value": str(value),
+                                    "value_json": value if isinstance(value, (dict, list)) else None
+                                }
+                                client.table('document_metadata').insert(meta_entry).execute()
+                            except Exception as me:
+                                logger.warning(f"Could not save metadata key '{key}' for {source}: {me}")
+                except Exception as e:
+                    logger.error(f"Could not save {source} to documents_registry: {e}. Chunks were still inserted.")
+                
                 successful += 1
                 
                 file_time = time.time() - file_start
@@ -230,11 +364,14 @@ async def ingest_documents_batch(
                     result_entry["action"] = "appended"
                     result_entry["existing_chunks"] = existing_chunk_count
                     result_entry["total_chunks"] = existing_chunk_count + inserted
+                    result_entry["status"] = "APPENDED"
                 elif source_exists and duplicate_action == "replace":
                     result_entry["action"] = "replaced"
                     result_entry["previous_chunks"] = existing_chunk_count
+                    result_entry["status"] = "REPLACED"
                 else:
                     result_entry["action"] = "new"
+                    result_entry["status"] = "NEW"
                 
                 results.append(result_entry)
                 
@@ -249,6 +386,7 @@ async def ingest_documents_batch(
             results.append({
                 "filename": file.filename,
                 "success": False,
+                "status": "FAILED",
                 "error": str(e),
                 "chunks_created": 0
             })
@@ -277,17 +415,25 @@ async def ingest_documents_batch(
 
 @router.get("/documents", response_model=DocumentListResponse)
 async def list_documents():
-    """List all documents in the knowledge base."""
+    """List all documents in the knowledge base with their metadata."""
     try:
-        sources = await db.list_sources()
+        client = db.client
         
-        # Get stats per source
+        # Query documents_registry for all documents (Sprint 5: Query registry instead of chunks)
+        result = client.table('documents_registry').select('*').execute()
+        
         documents = []
-        for source in sources:
-            documents.append({
-                "source": source,
-                "type": "document"
-            })
+        if result.data:
+            for doc_record in result.data:
+                documents.append({
+                    "id": doc_record.get('id'),
+                    "filename": doc_record.get('filename'),
+                    "source": doc_record.get('source'),
+                    "chunk_count": doc_record.get('chunk_count', 0),
+                    "file_size": doc_record.get('file_size', 0),
+                    "status": doc_record.get('status', 'unknown'),
+                    "upload_date": doc_record.get('upload_date')
+                })
         
         return DocumentListResponse(
             documents=documents,
@@ -317,3 +463,97 @@ async def delete_document(source: str):
     except Exception as e:
         logger.error(f"Error deleting document: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Document Management Endpoints (Phase 2)
+# ============================================================================
+
+@router.get("/documents/{document_id}")
+async def get_document_details(document_id: int):
+    """Get detailed information about a specific document."""
+    try:
+        from app.core.database import get_supabase_client
+        client = get_supabase_client()
+        
+        # Get document
+        doc_result = client.table('documents_registry') \
+            .select('*') \
+            .eq('id', document_id) \
+            .execute()
+        
+        if not doc_result.data:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        document = doc_result.data[0]
+        
+        # Get metadata
+        meta_result = client.table('document_metadata') \
+            .select('*') \
+            .eq('document_id', document_id) \
+            .execute()
+        
+        document['metadata'] = meta_result.data if meta_result.data else []
+        
+        return {
+            "success": True,
+            "document": document
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/documents/{document_id}/chunks")
+async def get_document_chunks(
+    document_id: int, 
+    limit: int = 50, 
+    offset: int = 0
+):
+    """Get all chunks for a specific document."""
+    try:
+        from app.core.database import get_supabase_client
+        client = get_supabase_client()
+        
+        result = client.table('rag_chunks') \
+            .select('id, chunk_id, text, created_at', count='exact') \
+            .eq('document_id', document_id) \
+            .order('id', desc=False) \
+            .limit(limit) \
+            .offset(offset) \
+            .execute()
+        
+        return {
+            "success": True,
+            "chunks": result.data,
+            "total": result.count,
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting document chunks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/documents/{document_id}")
+async def delete_document_by_id(document_id: int):
+    """Delete a document and all its associated chunks."""
+    try:
+        from app.services.cleanup import cleanup_service
+        result = await cleanup_service.delete_document_and_chunks(document_id)
+        
+        if result["success"]:
+            return result
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete document"))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document by ID: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
